@@ -14,6 +14,11 @@
 ;; 4. Heterogenous fleet (e.g., some use memory, some don't)
 ;; 5. Learning with high coop/autonomy. Change agent setting (e.g., use-memory) on the fly, if other agents seem to perform better with that setting
 
+
+;; test with opportunistic-switch on
+;; test with force-back-to-rest on
+;; check updating of current-heat-score, does not seem to decrease.
+
 ;; INSIGHT: with a memory-fade, all jobs will be done onces the demand dies out when ticks -> infinity.
 ;; coop is about the sharing, autonomy is about the caring (for yourself)
 extensions [table]  ;; Using table extension for efficient key-value storage
@@ -382,6 +387,8 @@ to go
     ;; Execute Demand Prediction if enabled
     if autonomy-level = 3 and learning-model = "Demand Prediction" [
       predict-demand current-time-block
+      ;; No need to call update-heat-map here - it will be called
+      ;; in update-prediction-accuracy every 100 ticks
     ]
 
     ;; Execute Learning if enabled
@@ -569,6 +576,10 @@ end
 
 ;; Update heat map scores based on demand predictions
 to update-heat-map
+  ;; First, apply decay to existing heat map scores
+  ;; This ensures values decrease over time if not refreshed
+  decay-heat-map-scores
+
   ;; For each restaurant, update its heat map score in this courier's heat map
   let total-restaurants restaurant-clusters * restaurants-per-cluster
 
@@ -582,7 +593,10 @@ to update-heat-map
       let location-key (word [xcor] of restaurant-agent "," [ycor] of restaurant-agent)
 
       ;; Calculate heat map score based on multiple factors
-      let demand-score table:get demand-predictions i
+      let demand-score 0
+      if table:has-key? demand-predictions i [
+        set demand-score table:get demand-predictions i
+      ]
 
       ;; Get distance factor - closer is better
       let distance-factor max list 0 (20 - distance restaurant-agent)
@@ -603,7 +617,27 @@ to update-heat-map
 
     set i i + 1
   ]
+end
 
+;; Apply decay to all heat map scores to ensure they decrease over time
+to decay-heat-map-scores
+  ;; Use a moderate decay factor (adjustable)
+  let decay-factor 0.95  ;; 5% decay per update
+
+  ;; Convert heat map to list for processing
+  let heat-entries table:to-list heat-map
+
+  ;; Apply decay to each entry
+  foreach heat-entries [ entry ->
+    let loc-key first entry
+    let current-value last entry
+
+    ;; Apply decay
+    let decayed-value current-value * decay-factor
+
+    ;; Update the heat map with decayed value
+    table:put heat-map loc-key decayed-value
+  ]
 end
 
 ;; Re-evaluate route based on predictions
@@ -613,85 +647,195 @@ to re-evaluate-route-based-on-prediction
     stop
   ]
 
-  let current-reward  0
-  ;; Check if there's a better opportunity nearby
-  ifelse current-job = nobody [
-    set current-reward 0
-  ][
-    set current-reward [reward] of current-job
-  ]
-
-  let better-jobs jobs with [
+;; Check for nearby jobs regardless of current job status
+  let neighbourhood-jobs jobs with [
     available? and
-    reward > current-reward * 1.5 and  ;; At least 50% better reward
     distance myself < neighbourhood-size
   ]
 
-  ;; Debug - Found better jobs?
-  if debug-demand-prediction and (count better-jobs > 0 )  [
-      ;; Debug info - Current job details
-      print (word "ROUTE EVAL [Courier " who "]: Current job #" [who] of current-job
-        ", Reward: " precision [reward] of current-job 2)
-    print (word "  Found " count better-jobs " potentially better jobs nearby")
-  ]
-
-  ;; If a much better job is found, consider switching
-  if any? better-jobs [
-    let best-alternative-job max-one-of better-jobs [reward]
-
-    ;; Debug - Best alternative details
+  ;; If there are jobs nearby, evaluate them
+  if any? neighbourhood-jobs [
+     ;; Debug - Found nearby jobs?
     if debug-demand-prediction [
-      print (word "  Best alternative: Job #" [who] of best-alternative-job
-        ", Reward: " precision [reward] of best-alternative-job 2)
+      print (word "Courier: " who)
+      print (word "  Found " count neighbourhood-jobs " jobs in neighbourhood")
     ]
 
-    ;; Calculate switching cost (progress lost on current delivery)
-    let origin-to-dest-distance (distance [origin] of current-job + distance [destination] of current-job)
-    let progress-so-far distance [destination] of current-job / origin-to-dest-distance
-    let switching-cost current-reward * progress-so-far
+    let best-job max-one-of neighbourhood-jobs [reward]
+    let actual-rest-id [restaurant-id] of best-job
+    set actual-rest-id actual-rest-id + 1
 
-    ;; Debug - Switching cost calculation
+    ;; Debug - Best job details
     if debug-demand-prediction [
-      print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
-        ", Switching cost: " precision switching-cost 2)
+      print (word "  Best available job: #" [who] of best-job
+        ", Restaurant: " actual-rest-id
+        ", Reward: " precision [reward] of best-job 2)
     ]
 
-    ;; If new job is worth more than what we'd lose, switch
-    ifelse [reward] of best-alternative-job > switching-cost + current-reward [
-      ;; Debug - Decision to switch
-      if debug-demand-prediction [
-        print (word "  SWITCHING JOBS: New reward (" precision [reward] of best-alternative-job 2
-          ") > Current remaining value (" precision (switching-cost + current-reward) 2 ")")
-      ]
+    ;; Handle different cases based on whether we have a current job
+    ifelse current-job = nobody [
+      ;; No current job - evaluate based on return destination or opportunistic switch
+      ifelse opportunistic-switch [
+        ;; Always take best job if opportunistic switching is enabled
+        if debug-demand-prediction [
+          print (word "  TAKING JOB: Opportunistic switching enabled, taking best job #" [who] of best-job)
+        ]
 
-      ;; Release current job back to available
-      let old-job-number [who] of current-job
-      ask current-job [
-        set available? true
-      ]
+        ;; Take new job
+        set current-job best-job
+        ask current-job [
+          set available? false
+        ]
 
-      ;; Take new job
-      set current-job best-alternative-job
-      ask current-job [
-        set available? false
-      ]
+        ;; Set new destination
+        set next-location [origin] of current-job
+        face next-location
+        set to-origin? true
+        set to-destination? false
+      ][
+        ;; Not opportunistic - compare to expected value of current destination
+        ;; Get restaurant we're heading to (if any)
+        let current-restaurant-value 0
+        let returning-to-restaurant? false
 
-      ;; Set new destination
-      set next-location [origin] of current-job
-      face next-location
-      set to-origin? true
-      set to-destination? false
+        if status = "moving-towards-restaurant" and not to-origin? [
+          ;; We're returning to a restaurant - get its predicted value
+          let target-patch next-location
+          let target-restaurant one-of restaurants-on target-patch
 
-      ;; Debug - Confirmation of switch
-      if debug-demand-prediction [
-        print (word "  Job switch complete: Released #" old-job-number
-          ", Now handling #" [who] of current-job)
+          if target-restaurant != nobody [
+            set returning-to-restaurant? true
+            let rest-id [restaurant-id] of target-restaurant
+
+            ;; Get predicted value for this restaurant
+            if table:has-key? demand-predictions rest-id [
+              set current-restaurant-value table:get demand-predictions rest-id
+            ]
+
+            if debug-demand-prediction [
+              print (word "  Returning to restaurant #" actual-rest-id
+                ", Predicted value: " precision current-restaurant-value 2)
+            ]
+          ]
+        ]
+
+        ;; Compare best job to current destination value
+        ifelse (not returning-to-restaurant?) or ([reward] of best-job > current-restaurant-value * 1.2) [
+          ;; Take job if it's better than current destination or we're not returning anywhere specific
+          if debug-demand-prediction [
+            print (word "  TAKING JOB: Better than current destination value")
+          ]
+
+          ;; Take new job
+          set current-job best-job
+          ask current-job [
+            set available? false
+          ]
+
+          ;; Set new destination
+          set next-location [origin] of current-job
+          face next-location
+          set to-origin? true
+          set to-destination? false
+
+          ;; Color to grey
+          set color grey
+        ][
+          if debug-demand-prediction [
+            print (word "  NOT TAKING JOB: Current destination value (" precision current-restaurant-value 2
+              ") is better than job reward (" precision [reward] of best-job 2 ")")
+          ]
+        ]
       ]
     ][
-      ;; Debug - Decision not to switch
-      if debug-demand-prediction [
-        print (word "  NOT SWITCHING: New reward (" precision [reward] of best-alternative-job 2
-          ") <= Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+      ;; Have current job - original evaluation logic
+      let current-reward [reward] of current-job
+
+      ;; Only consider jobs with significantly better reward
+      ifelse [reward] of best-job > current-reward * 1.5 [
+        ;; Calculate switching cost (progress lost on current delivery)
+        let origin-to-dest-distance (distance [origin] of current-job + distance [destination] of current-job)
+        let progress-so-far distance [destination] of current-job / origin-to-dest-distance
+        let switching-cost current-reward * progress-so-far
+
+        ;; Debug - Switching cost calculation
+        if debug-demand-prediction [
+          print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
+            ", Switching cost: " precision switching-cost 2)
+        ]
+
+        ;; Evaluate whether to switch based on opportunistic-switch or value comparison
+        ifelse opportunistic-switch [
+          ;; Always switch if opportunistic
+          if debug-demand-prediction [
+            print (word "  SWITCHING JOBS: Opportunistic switching enabled")
+          ]
+
+          ;; Switch jobs
+          let old-job-number [who] of current-job
+          ask current-job [
+            set available? true
+          ]
+
+          set current-job best-job
+          ask current-job [
+            set available? false
+          ]
+
+          ;; Set new destination
+          set next-location [origin] of current-job
+          face next-location
+          set to-origin? true
+          set to-destination? false
+
+          if debug-demand-prediction [
+            print (word "  Job switch complete: Released #" old-job-number
+              ", Now handling #" [who] of current-job)
+          ]
+        ][
+          ;; Standard evaluation - switch if new job is worth more than what we'd lose
+          ifelse [reward] of best-job > switching-cost + current-reward [
+            ;; Debug - Decision to switch
+            if debug-demand-prediction [
+              print (word "  SWITCHING JOBS: New reward (" precision [reward] of best-job 2
+                ") > Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+            ]
+
+            ;; Release current job back to available
+            let old-job-number [who] of current-job
+            ask current-job [
+              set available? true
+            ]
+
+            ;; Take new job
+            set current-job best-job
+            ask current-job [
+              set available? false
+            ]
+
+            ;; Set new destination
+            set next-location [origin] of current-job
+            face next-location
+            set to-origin? true
+            set to-destination? false
+
+            ;; Debug - Confirmation of switch
+            if debug-demand-prediction [
+              print (word "  Job switch complete: Released #" old-job-number
+                ", Now handling #" [who] of current-job)
+            ]
+          ][
+            ;; Debug - Decision not to switch
+            if debug-demand-prediction [
+              print (word "  NOT SWITCHING: New reward (" precision [reward] of best-job 2
+                ") <= Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+            ]
+          ]
+        ]
+      ][
+        if debug-demand-prediction [
+          print (word "  NOT SWITCHING: New job reward not significantly better (needs 50% improvement)")
+        ]
       ]
     ]
   ]
@@ -1026,12 +1170,16 @@ to update-prediction-accuracy
   let courier-count 0
 
   ask couriers with [autonomy-level = 3 and learning-model = "Demand Prediction"] [
-  ;; Make sure prediction-history is a list and not empty before calculating mean
-  if is-list? prediction-history and not empty? prediction-history [
-    set total-accuracy total-accuracy + (1 - (mean prediction-history / 100))
-    set courier-count courier-count + 1
+    ;; Make sure prediction-history is a list and not empty before calculating mean
+    if is-list? prediction-history and not empty? prediction-history [
+      set total-accuracy total-accuracy + (1 - (mean prediction-history / 100))
+      set courier-count courier-count + 1
     ]
+
+    ;; Add heat map update here so it's called regularly
+    update-heat-map
   ]
+
   if courier-count > 0 [
     set prediction-accuracy total-accuracy / courier-count
   ]
@@ -1557,7 +1705,7 @@ end
 
 ;; Evaluate rewards and adjust courier behavior
 to check-rewards
-    ;; For autonomy level 0, just check if we're at the destination
+;; For autonomy level 0, just check if we're at the destination
   if autonomy-level = 0 and has-done-job? [
     if status = "waiting-for-next-job" [
       ;; Check for jobs at this specific restaurant
@@ -1571,7 +1719,10 @@ to check-rewards
   if autonomy-level = 3 and learning-model = "Demand Prediction" and has-done-job? [
     ;; Use prediction-based decision making
     if status = "waiting-for-next-job" or status = "searching-for-next-job" [
-      ;; Decide whether to stay, search locally, or relocate based on heat map
+      ;; First ensure our heat map is up-to-date with latest faded values
+      update-heat-map
+
+      ;; Then decide whether to stay, search locally, or relocate based on heat map
       let current-location-key (word xcor "," ycor)
       let current-heat-score 0
 
@@ -1587,12 +1738,17 @@ to check-rewards
       if status = "waiting-for-next-job" [
         check-neighbourhood
       ]
-      print(word "Courier" who "has current-heat-score: " current-heat-score)
+
+      ;; Print the current heat score so we can verify it's changing
+      if debug-demand-prediction and (ticks mod 10 = 0) [
+        print (word "Courier " who " has current-heat-score: " precision current-heat-score 2)
+      ]
 
       ;; If we didn't find a job and current location score is low, consider moving
-      if status = "waiting-for-next-job" or status = "searching-for-next-job" [
+      if (status = "waiting-for-next-job") or (status = "searching-for-next-job") [
+        print (word who " is waiting... Current heat-score: " current-heat-score "Threshold: " free-moving-threshold)
         ifelse current-heat-score < free-moving-threshold [
-
+          print "I wanna move!!!!"
           ;; Current location not promising, move to better restaurant
           ifelse best-restaurant-id > 0 [
             move-towards-predicted-restaurant best-restaurant-id
@@ -1922,7 +2078,7 @@ job-arrival-rate
 job-arrival-rate
 0
 100
-7.0
+0.0
 1
 1
 NIL
@@ -2170,7 +2326,7 @@ free-moving-threshold
 free-moving-threshold
 0
 50
-10.0
+36.0
 1
 1
 NIL

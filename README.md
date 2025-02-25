@@ -1,7 +1,7 @@
-# 🚲 Self-Organization in Crowdsourced Food Delivery Systems Simulation
+# 🚲 Self-Organization in Crowdsourced Food Delivery Systems
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![NetLogo](https://img.shields.io/badge/NetLogo-6.3.0-blue.svg)](http://ccl.northwestern.edu/netlogo/)
+[![NetLogo](https://img.shields.io/badge/NetLogo-6.4.0-blue.svg)](http://ccl.northwestern.edu/netlogo/)
 
 An agent-based simulation model in Netlogo to study self-organizing in crowdsourced food delivery systems.
 
