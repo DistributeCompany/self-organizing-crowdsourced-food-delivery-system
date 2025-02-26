@@ -13,6 +13,12 @@
 ;; 3. customer not dead messages pop up
 ;; 4. Heterogenous fleet (e.g., some use memory, some don't)
 ;; 5. Learning with high coop/autonomy. Change agent setting (e.g., use-memory) on the fly, if other agents seem to perform better with that setting
+;; 6. Maybe change in update-heatmap to also count the # of agents in the area searching for a job when calculating the competition-factor
+;; 7. Check whether in update-temporal-patterns there is a fair balance between latest-demand and history. The prediction-weight should be proper.
+
+;; test with opportunistic-switch on
+;; test with force-back-to-rest on
+;; check updating of current-heat-score, does not seem to decrease.
 
 ;; INSIGHT: with a memory-fade, all jobs will be done onces the demand dies out when ticks -> infinity.
 ;; coop is about the sharing, autonomy is about the caring (for yourself)
@@ -52,11 +58,13 @@ jobs-own [
   cluster-location    ;; Which restaurant cluster this belongs to
   reward              ;; Payment for completing delivery
   restaurant-id       ;; ID of originating restaurant
+  restaurant-instance ;; Instance of originating restaurant
 ]
 
 ;; Courier properties
 couriers-own [
   current-job               ;; Currently assigned delivery task
+  going-to-rest
   next-location             ;; Where the courier is heading
   current-cluster-location  ;; Current cluster area
   status                    ;; Current state: on-job (red), waiting (orange),
@@ -75,7 +83,8 @@ couriers-own [
   time-patterns         ;; Table tracking performance by time period
   prediction-history    ;; List of prediction accuracy records
   heat-map              ;; Table storing location scores
-  prediction-weight     ;; How much to weight predictions vs. actual demand
+  prediction-weight     ;; Balance between prediction vs. actual demand
+  waiting-at-restaurant
 ]
 
 ;; Customer properties
@@ -101,8 +110,6 @@ globals [
   searching-couriers      ;; Count of searching couriers
 
   show-cluster-lines?     ;; Boolean to toggle line visibility
-
-  debug-interval      ;; How often to print debug info (in ticks)
 
   learning-model        ;; Selected learning model from chooser
   prediction-accuracy   ;; Tracks how accurate predictions are
@@ -141,8 +148,6 @@ to setup
   set returning-couriers 0
   set delivering-couriers 0
   set searching-couriers 0
-
-  set debug-interval 200  ;; Print debug info every x ticks (adjust as needed)
 end
 
 ;; Procedure to draw lines between clusters and their restaurants
@@ -220,6 +225,7 @@ to setup-couriers
       set color cur-color
       set waiting-couriers waiting-couriers + 1
       set current-job nobody
+      set going-to-rest nobody
       set next-location nobody
       set jobs-performed []
       set has-done-job? false
@@ -233,7 +239,8 @@ to setup-couriers
       set time-patterns table:make
       set prediction-history []  ;; Initialize as an empty list
       set heat-map table:make    ;; Each courier now has its own heat-map
-      set prediction-weight 0.5  ;; Start with equal weight between predictions and observations
+      set prediction-weight start-prediction-weight ;; Initialize prediction weight based on user input
+      set waiting-at-restaurant nobody
     ]
 
     ;; Rotate through restaurant list for initial placement
@@ -371,9 +378,10 @@ to go
   let current-time-block get-current-time-block
 
   ask couriers [
-     ;; Apply memory fade to all couriers
-     apply-memory-fade
-
+     ;; Apply memory fade to all couriers every 60 ticks (= 1 minute)
+    if (ticks mod 60 = 0)[
+      apply-memory-fade
+    ]
     ;; Handle cooperative behavior
     if cooperativeness-level > 1 [
       share-information
@@ -382,6 +390,8 @@ to go
     ;; Execute Demand Prediction if enabled
     if autonomy-level = 3 and learning-model = "Demand Prediction" [
       predict-demand current-time-block
+      ;; No need to call update-heat-map here - it will be called
+      ;; in update-prediction-accuracy every 100 ticks
     ]
 
     ;; Execute Learning if enabled
@@ -450,7 +460,7 @@ to go
   count-courier-activities
 
   ;; Update prediction accuracy metrics every 50 ticks
-  if ticks mod 100 = 0 [
+  if ticks mod debug-interval = 0 [
     update-prediction-accuracy
     if debug-demand-prediction[
       debug-prediction-performance
@@ -474,9 +484,11 @@ end
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Get current time block based on tick number
+;; Get current time block based on tick number
 to-report get-current-time-block
   ;; Convert ticks to a time-of-day representation (24-hour cycle)
-  let time-of-day ticks mod 1440 ; every tick is a minute
+  ;; First convert ticks to minutes, then to hours
+  let time-of-day floor ((ticks mod 1440) / 3600) ; convert seconds to hours (0-23)
 
   ;; Return appropriate time block
   if time-of-day >= 0 and time-of-day < 4 [
@@ -509,6 +521,11 @@ to predict-demand [current-time-block]
 
   ;; For each restaurant, make a prediction
   let i 1
+  if debug-demand-prediction and (ticks mod 50 = 0)[
+    print("DEMAND PREDICTION")
+    print(word "   Courier: " who)
+  ]
+
   while [i <= total-restaurants] [
     ;; Check if time_patterns has the restaurant key
     ifelse table:has-key? time-patterns i [
@@ -526,14 +543,25 @@ to predict-demand [current-time-block]
         ;; Get recent actual demand (from reward list)
         let recent-rewards table:get reward-list-per-restaurant i
         let recent-demand 0
-        if not empty? recent-rewards [
-          set recent-demand item 0 recent-rewards  ;; Most recent reward
+
+        ;; Filter out zero values and calculate average
+        let non-zero-rewards filter [ reward-value -> reward-value > 0 ] recent-rewards
+
+        if not empty? non-zero-rewards [
+          set recent-demand mean non-zero-rewards  ;; Average of non-zero rewards
         ]
 
         ;; Calculate predicted demand by combining historical pattern and recent data
         let predicted-demand (current-block-value * prediction-weight) +
                            (recent-demand * (1 - prediction-weight))
 
+        if debug-demand-prediction and (ticks mod 50 = 0)[
+          print(word "   Restaurant: " i)
+          print(word "   Current Time Block: " current-time-block)
+          print(word "   Current Time Block Value: " precision current-block-value 2)
+          print(word "   Recent Demand: " precision recent-demand 2)
+          print(word "   Predicted Demand: " precision predicted-demand 2 " (Based on: "(prediction-weight * 100)"% Time Block /"((1 - prediction-weight) * 100)"% Recent History)")
+        ]
         ;; Update prediction
         table:put demand-predictions i predicted-demand
       ][
@@ -569,11 +597,22 @@ end
 
 ;; Update heat map scores based on demand predictions
 to update-heat-map
+  ;; First, apply decay to existing heat map scores
+  ;; This ensures values decrease over time if not refreshed
+  ;decay-heat-map-scores
+
+  if debug-memory and (ticks mod debug-interval = 0)[
+    print "=============== UPDATING HEATMAP ==============="
+  ]
   ;; For each restaurant, update its heat map score in this courier's heat map
   let total-restaurants restaurant-clusters * restaurants-per-cluster
 
   let i 1
   while [i <= total-restaurants] [
+    if debug-memory and (ticks mod debug-interval  = 0)[
+      print (word "Courier: " who)
+      print (word "  Processing Restaurant: " i)
+    ]
     ;; Get restaurant location
     let restaurant-agent one-of restaurants with [restaurant-id = i]
 
@@ -582,7 +621,10 @@ to update-heat-map
       let location-key (word [xcor] of restaurant-agent "," [ycor] of restaurant-agent)
 
       ;; Calculate heat map score based on multiple factors
-      let demand-score table:get demand-predictions i
+      let demand-score 0
+      if table:has-key? demand-predictions i [
+        set demand-score table:get demand-predictions i
+      ]
 
       ;; Get distance factor - closer is better
       let distance-factor max list 0 (20 - distance restaurant-agent)
@@ -594,8 +636,17 @@ to update-heat-map
       ]
       let competition-factor max list 0 (5 - waiting-count)
 
+      if debug-memory and (ticks mod debug-interval = 0)[
+        print (word "     Demand Score: " precision demand-score 2"  (weight: 0.5)")
+        print (word "     Distance Factor: " precision distance-factor 2"  (weight: 0.3)")
+        print (word "     Competition Factor: " precision competition-factor 2"  (weight: 0.1)")
+      ]
       ;; Calculate overall heat score
       let heat-score (demand-score * 0.6) + (distance-factor * 0.3) + (competition-factor * 0.1)
+
+       if debug-memory and (ticks mod debug-interval = 0)[
+        print (word "     Heat Score: " precision heat-score 2)
+      ]
 
       ;; Update heat map - now this is specific to the current courier
       table:put heat-map location-key heat-score
@@ -603,7 +654,27 @@ to update-heat-map
 
     set i i + 1
   ]
+end
 
+;; Apply decay to all heat map scores to ensure they decrease over time
+to decay-heat-map-scores
+  ;; Use a moderate decay factor (adjustable)
+  let decay-factor 0.95  ;; 5% decay per update
+
+  ;; Convert heat map to list for processing
+  let heat-entries table:to-list heat-map
+
+  ;; Apply decay to each entry
+  foreach heat-entries [ entry ->
+    let loc-key first entry
+    let current-value last entry
+
+    ;; Apply decay
+    let decayed-value current-value * decay-factor
+
+    ;; Update the heat map with decayed value
+    table:put heat-map loc-key decayed-value
+  ]
 end
 
 ;; Re-evaluate route based on predictions
@@ -613,85 +684,206 @@ to re-evaluate-route-based-on-prediction
     stop
   ]
 
-  let current-reward  0
-  ;; Check if there's a better opportunity nearby
-  ifelse current-job = nobody [
-    set current-reward 0
-  ][
-    set current-reward [reward] of current-job
-  ]
-
-  let better-jobs jobs with [
+;; Check for nearby jobs regardless of current job status
+  let neighbourhood-jobs jobs with [
     available? and
-    reward > current-reward * 1.5 and  ;; At least 50% better reward
     distance myself < neighbourhood-size
   ]
 
-  ;; Debug - Found better jobs?
-  if debug-demand-prediction and (count better-jobs > 0 )  [
-      ;; Debug info - Current job details
-      print (word "ROUTE EVAL [Courier " who "]: Current job #" [who] of current-job
-        ", Reward: " precision [reward] of current-job 2)
-    print (word "  Found " count better-jobs " potentially better jobs nearby")
-  ]
-
-  ;; If a much better job is found, consider switching
-  if any? better-jobs [
-    let best-alternative-job max-one-of better-jobs [reward]
-
-    ;; Debug - Best alternative details
-    if debug-demand-prediction [
-      print (word "  Best alternative: Job #" [who] of best-alternative-job
-        ", Reward: " precision [reward] of best-alternative-job 2)
+  ;; If there are jobs nearby, evaluate them
+  if any? neighbourhood-jobs [
+     ;; Debug - Found nearby jobs?
+    if debug-demand-prediction and (ticks mod 10 = 0)[
+      print (word "Courier: " who)
+      print (word "  Found " count neighbourhood-jobs " jobs in neighbourhood")
     ]
 
-    ;; Calculate switching cost (progress lost on current delivery)
-    let origin-to-dest-distance (distance [origin] of current-job + distance [destination] of current-job)
-    let progress-so-far distance [destination] of current-job / origin-to-dest-distance
-    let switching-cost current-reward * progress-so-far
+    let best-job max-one-of neighbourhood-jobs [reward]
+    let actual-rest-id [restaurant-id] of best-job
+    set actual-rest-id actual-rest-id + 1
 
-    ;; Debug - Switching cost calculation
-    if debug-demand-prediction [
-      print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
-        ", Switching cost: " precision switching-cost 2)
+    ;; Debug - Best job details
+    if debug-demand-prediction and (ticks mod 10 = 0) [
+      print (word "  Best available job: #" [who] of best-job
+        ", Restaurant: " actual-rest-id
+        ", Reward: " precision [reward] of best-job 2)
     ]
 
-    ;; If new job is worth more than what we'd lose, switch
-    ifelse [reward] of best-alternative-job > switching-cost + current-reward [
-      ;; Debug - Decision to switch
-      if debug-demand-prediction [
-        print (word "  SWITCHING JOBS: New reward (" precision [reward] of best-alternative-job 2
-          ") > Current remaining value (" precision (switching-cost + current-reward) 2 ")")
-      ]
+    ;; Handle different cases based on whether we have a current job
+    ifelse current-job = nobody [
+      ;; No current job - evaluate based on return destination or opportunistic switch
+      ifelse opportunistic-switch [
+        ;; Always take best job if opportunistic switching is enabled
+        if debug-demand-prediction[
+          print (word "Courier: " who)
+          print (word "  TAKING JOB: Opportunistic switching enabled, taking best job #" [who] of best-job)
+        ]
 
-      ;; Release current job back to available
-      let old-job-number [who] of current-job
-      ask current-job [
-        set available? true
-      ]
+        ;; Take new job
+        set current-job best-job
+        ask current-job [
+          set available? false
+        ]
 
-      ;; Take new job
-      set current-job best-alternative-job
-      ask current-job [
-        set available? false
-      ]
+        ;; Set new destination
+        set next-location [origin] of current-job
+        face next-location
+        set to-origin? true
+        set to-destination? false
+        set going-to-rest [restaurant-instance] of current-job
+        set color grey
+      ][
+        ;; Not opportunistic - compare to expected value of current destination
+        ;; Get restaurant we're heading to (if any)
+        let current-restaurant-value 0
+        let returning-to-restaurant? false
 
-      ;; Set new destination
-      set next-location [origin] of current-job
-      face next-location
-      set to-origin? true
-      set to-destination? false
+        if status = "moving-towards-restaurant" and not to-origin? [
+          ;; We're returning to a restaurant - get its predicted value
+          let target-patch next-location
+          let target-restaurant one-of restaurants-on target-patch
 
-      ;; Debug - Confirmation of switch
-      if debug-demand-prediction [
-        print (word "  Job switch complete: Released #" old-job-number
-          ", Now handling #" [who] of current-job)
+          if target-restaurant != nobody [
+            set returning-to-restaurant? true
+            let rest-id [restaurant-id] of target-restaurant
+
+            ;; Get predicted value for this restaurant
+            if table:has-key? demand-predictions rest-id [
+              set current-restaurant-value table:get demand-predictions rest-id
+            ]
+
+            if debug-demand-prediction and (ticks mod 10 = 0) [
+              print (word "  Returning to restaurant #" actual-rest-id
+                ", Predicted value: " precision current-restaurant-value 2)
+            ]
+          ]
+        ]
+
+        ;; Compare best job to current destination value
+        ifelse (not returning-to-restaurant?) or ([reward] of best-job > current-restaurant-value * 1.2) [
+          ;; Take job if it's better than current destination or we're not returning anywhere specific
+          if debug-demand-prediction[
+            print (word "Courier: " who)
+            print (word "  TAKING JOB: Job value (" precision [reward] of best-job 2 ") at Restaurant " [restaurant-id] of best-job " is better than going back to Restaurant " [restaurant-id] of going-to-rest  " with value (" precision current-restaurant-value 2 ")")
+          ]
+
+          ;; Take new job
+          set current-job best-job
+          ask current-job [
+            set available? false
+          ]
+
+          ;; Set new destination
+          set next-location [origin] of current-job
+          face next-location
+          set to-origin? true
+          set to-destination? false
+          set going-to-rest [restaurant-instance] of current-job
+
+          ;; Color to grey
+          set color grey
+        ][
+          if debug-demand-prediction and (ticks mod 10 = 0) [
+            print (word "  NOT TAKING JOB: Current destination value (" precision current-restaurant-value 2
+              ") is better than job reward (" precision [reward] of best-job 2 ")")
+          ]
+        ]
       ]
     ][
-      ;; Debug - Decision not to switch
-      if debug-demand-prediction [
-        print (word "  NOT SWITCHING: New reward (" precision [reward] of best-alternative-job 2
-          ") <= Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+      ;; Have current job - original evaluation logic
+      let current-reward [reward] of current-job
+
+      ;; Only consider jobs with significantly better reward
+      ifelse [reward] of best-job > current-reward * (1 + switch-threshold / 100) [
+        ;; Calculate switching cost (progress lost on current delivery)
+        let origin-to-dest-distance (distance [origin] of current-job + distance [destination] of current-job)
+        let progress-so-far distance [destination] of current-job / origin-to-dest-distance
+        let switching-cost current-reward * progress-so-far
+
+        ;; Debug - Switching cost calculation
+        if debug-demand-prediction and (ticks mod 10 = 0) [
+          print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
+            ", Switching cost: " precision switching-cost 2)
+        ]
+
+        ;; Evaluate whether to switch based on opportunistic-switch or value comparison
+        ifelse opportunistic-switch [
+          ;; Always switch if opportunistic
+          if debug-demand-prediction [
+            print (word "Courier: " who)
+            print (word "  SWITCHING JOBS: Opportunistic switching enabled")
+          ]
+
+          ;; Switch jobs
+          let old-job-number [who] of current-job
+          ask current-job [
+            set available? true
+          ]
+
+          set current-job best-job
+          ask current-job [
+            set available? false
+          ]
+
+          ;; Set new destination
+          set next-location [origin] of current-job
+          face next-location
+          set to-origin? true
+          set to-destination? false
+          set going-to-rest [restaurant-instance] of current-job
+          set color grey
+
+          if debug-demand-prediction [
+            print (word "  Job switch complete: Released #" old-job-number
+              ", Now handling #" [who] of current-job)
+          ]
+        ][
+          ;; Standard evaluation - switch if new job is worth more than what we'd lose
+          ifelse [reward] of best-job > switching-cost + current-reward [
+            ;; Debug - Decision to switch
+            if debug-demand-prediction[
+              print (word "Courier: " who)
+              print (word "  SWITCHING JOBS: New reward (" precision [reward] of best-job 2
+                ") > Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+            ]
+
+            ;; Release current job back to available
+            let old-job-number [who] of current-job
+            ask current-job [
+              set available? true
+            ]
+
+            ;; Take new job
+            set current-job best-job
+            ask current-job [
+              set available? false
+            ]
+
+            ;; Set new destination
+            set next-location [origin] of current-job
+            face next-location
+            set to-origin? true
+            set to-destination? false
+            set going-to-rest [restaurant-instance] of current-job
+            set color grey
+            ;; Debug - Confirmation of switch
+            if debug-demand-prediction[
+              print (word "Courier: " who)
+              print (word "  Job switch complete: Released #" old-job-number
+                ", Now handling #" [who] of current-job)
+            ]
+          ][
+            ;; Debug - Decision not to switch
+            if debug-demand-prediction and (ticks mod 10 = 0) [
+              print (word "  NOT SWITCHING: New reward (" precision [reward] of best-job 2
+                ") <= Current remaining value (" precision (switching-cost + current-reward) 2 ")")
+            ]
+          ]
+        ]
+      ][
+        if debug-demand-prediction and (ticks mod 10 = 0) [
+          print (word "  NOT SWITCHING: New job reward not significantly better (needs " switch-threshold"% improvement)")
+        ]
       ]
     ]
   ]
@@ -753,7 +945,7 @@ to-report find-best-heat-map-restaurant
       ]
 
       ;; Check if this is the best score
-      if heat-score > best-score [
+      if (heat-score > best-score) and (heat-score > free-moving-threshold) [
         set best-score heat-score
         set best-id i
       ]
@@ -866,7 +1058,7 @@ to debug-prediction-performance
   ;; Compare prediction vs. actual demand across restaurants
   print "  Restaurant Demand (Predicted vs. Actual):"
   let total-restaurants restaurant-clusters * restaurants-per-cluster
-  let sample-restaurants min list 5 total-restaurants
+  let sample-restaurants min list 8 total-restaurants
   print (word "  Analyzing " sample-restaurants " sample restaurants:")
   let i 1
   let restaurants-shown 0
@@ -881,36 +1073,49 @@ to debug-prediction-performance
     while [i <= total-restaurants and restaurants-shown < sample-restaurants] [
       ;; Get courier's prediction for this restaurant
       let predicted 0
+      let recent-demand 0
       ask sample-courier [
         if table:has-key? demand-predictions i [
           set predicted table:get demand-predictions i
+
+          ;; Get recent actual demand (from reward list)
+          let recent-rewards table:get reward-list-per-restaurant i
+
+
+          ;; Filter out zero values and calculate average
+          let non-zero-rewards filter [ reward-value -> reward-value > 0 ] recent-rewards
+
+          if not empty? non-zero-rewards [
+            set recent-demand mean non-zero-rewards  ;; Average of non-zero rewards
+          ]
         ]
       ]
 
       ;; Get actual demand (number of available jobs at restaurant)
-      let actual-demand count jobs with [available? and restaurant-id = i]
+      ;let actual-demand count jobs with [available? and restaurant-id = i]
 
       ;; Evaluate prediction accuracy
-      let prediction-diff abs (predicted - actual-demand)
+
       let accuracy-str "Unknown"
-      if predicted > 0 or actual-demand > 0 [
-        ifelse prediction-diff = 0 [
-          set accuracy-str "Perfect"
+      if predicted > 0 or recent-demand > 0 [
+        let prediction-diff abs (predicted / recent-demand)
+        ifelse prediction-diff < 0.25 or prediction-diff > 1.75 [
+          set accuracy-str "Poor"
         ][
-          ifelse prediction-diff <= 1 [
-            set accuracy-str "Good"
+          ifelse prediction-diff <= 0.5 or prediction-diff > 1.50 [
+            set accuracy-str "Fair"
           ][
-            ifelse prediction-diff <= 3 [
-              set accuracy-str "Fair"
+            ifelse prediction-diff <= 0.75 or prediction-diff > 1.25 [
+              set accuracy-str "Good"
             ][
-              set accuracy-str "Poor"
+              set accuracy-str "Excellent"
             ]
           ]
         ]
       ]
 
       print (word "    Restaurant #" i ": Predicted=" precision predicted 2
-             ", Actual=" actual-demand ", Accuracy=" accuracy-str)
+             ", Actual=" precision recent-demand 2", Accuracy=" accuracy-str)
 
       set restaurants-shown restaurants-shown + 1
       set i i + 1
@@ -967,10 +1172,13 @@ to move-towards-predicted-restaurant [rest-id]
     set status "moving-towards-restaurant"
     set color blue
     set to-origin? false
+    set going-to-rest target-restaurant
+    set current-job nobody
   ][
     ;; If target restaurant not found, default to searching
     set status "searching-for-next-job"
     set color green
+    set waiting-at-restaurant nobody
   ]
 end
 
@@ -992,10 +1200,17 @@ to update-temporal-patterns [rest-id reward-value]
   if table:has-key? rest-time-patterns current-time-block [
     set current-value table:get rest-time-patterns current-time-block
   ]
+  print (word "Courier: " who)
+  print (word "Updating temporal pattern for Restaurant: " rest-id)
+  print (word "   Current Time Block Value: " precision current-value 2)
 
   ;; Update value with exponential moving average
-  let alpha learning-rate  ;; Learning rate
-  let updated-value (current-value * (1 - alpha)) + (reward-value * alpha)
+
+  ;; Note: this value represents the expected reward for a given restaurant at a given time-block (e.g., 12-16).
+  ;; This expected reward is specific a a courier. So views on the world might differen between courier agents based on their experience.
+
+  let updated-value (current-value * (1 - learning-rate)) + (reward-value * learning-rate)
+  print (word "   Updated Time Block Value: " precision updated-value 2)
 
   ;; Store updated value
   table:put rest-time-patterns current-time-block updated-value
@@ -1005,8 +1220,14 @@ to update-temporal-patterns [rest-id reward-value]
   let predicted-demand table:get demand-predictions rest-id
   let prediction-error abs (predicted-demand - reward-value)
 
+  print (word "   Predicted Demand: " predicted-demand)
+  print (word "   Actual Reward: " predicted-demand)
+  print (word "   Prediction Error: " prediction-error)
+
   ;; Record prediction accuracy
   set prediction-history lput prediction-error prediction-history
+  print (word "   Prediction Error History: " prediction-history)
+
   if length prediction-history > 10 [
     ;; Keep only the last 10 predictions
     set prediction-history but-first prediction-history
@@ -1014,9 +1235,33 @@ to update-temporal-patterns [rest-id reward-value]
 
   ;; Adjust prediction weight based on accuracy
   let avg-error mean prediction-history
+  print (word "   Avg. Prediction Error: " avg-error)
+
   if avg-error > 0 [
-    ;; More accurate = higher weight to predictions
-    set prediction-weight max list 0.1 min list 0.9 (1 - (avg-error / 100))
+    ;; Compare latest error to average error
+    let latest-error last prediction-history
+
+    let relative-error latest-error / (avg-error + 0.0001)  ;; Avoid division by zero
+    print (word "   Relative Error: " relative-error)
+    print (word "   Old Prediction Weight: " precision prediction-weight 2)
+    ;; If latest error is lower than average, reduce prediction weight (trust recent data more)
+    ;; If latest error is higher than average, increase prediction weight (trust patterns more)
+    ifelse relative-error < 0.8 [
+      ;; Recent error is significantly lower - reduce weight to favor recent data
+      ;set prediction-weight max list 0.1 (prediction-weight * 0.8)
+      print (word "   Weight reduced to favor more accurate recent data")
+    ][
+      ifelse relative-error > 1.2 [
+        ;; Recent error is significantly higher - increase weight to rely on historical patterns
+        ;set prediction-weight min list 0.9 (prediction-weight * 1.2)
+        print (word "   Weight increased to favor more reliable historical patterns")
+      ][
+        ;; Error is roughly in line with average - minor adjustment
+        ;set prediction-weight max list 0.1 min list 0.9 (prediction-weight * (1 + (0.5 - relative-error) / 5))
+      ]
+    ]
+
+    print (word "   New Prediction Weight: " precision prediction-weight 2)
   ]
 end
 
@@ -1026,12 +1271,16 @@ to update-prediction-accuracy
   let courier-count 0
 
   ask couriers with [autonomy-level = 3 and learning-model = "Demand Prediction"] [
-  ;; Make sure prediction-history is a list and not empty before calculating mean
-  if is-list? prediction-history and not empty? prediction-history [
-    set total-accuracy total-accuracy + (1 - (mean prediction-history / 100))
-    set courier-count courier-count + 1
+    ;; Make sure prediction-history is a list and not empty before calculating mean
+    if is-list? prediction-history and not empty? prediction-history [
+      set total-accuracy total-accuracy + (1 - (mean prediction-history / 100))
+      set courier-count courier-count + 1
     ]
+
+    ;; Add heat map update here so it's called regularly
+    ;update-heat-map
   ]
+
   if courier-count > 0 [
     set prediction-accuracy total-accuracy / courier-count
   ]
@@ -1043,11 +1292,12 @@ to apply-memory-fade
   if use-memory and memory-fade > 0 and debug-interval > 0 [
     ;; For debugging - store a courier for monitoring
     let debug-courier-id -1
-
     ;; Show memory before fade
     if debug-memory and (ticks mod debug-interval = 0) and any? couriers [
+
       let debug-courier one-of couriers
       set debug-courier-id [who] of debug-courier
+      print "=============== APPLYING MEMORY FADE ==============="
       print (word "BEFORE FADE (Tick " ticks ", Strategy: " fade-strategy ", Rate: " memory-fade "%):")
       debug-print-memory debug-courier
     ]
@@ -1197,11 +1447,11 @@ to debug-print-memory [courier-agent]
   print (word "  Total reward: " precision [total-reward] of courier-agent 2)
 
   ;; Print memory for first few restaurants (to avoid excessive output)
-  print "  Restaurant memories (showing only first 3 restaurants):"
+  print "  Restaurant memories (showing only first x restaurants):"
   let count-shown 0
   let i 1
 
-  while [i <= table:length [reward-list-per-restaurant] of courier-agent and count-shown < 3] [
+  while [i <= table:length [reward-list-per-restaurant] of courier-agent and count-shown < 8] [
     let restaurant-memory table:get [reward-list-per-restaurant] of courier-agent i
 
     ;; Check if restaurant has any memory entries
@@ -1221,10 +1471,11 @@ to debug-print-memory [courier-agent]
     ]
 
     set i i + 1
+
+  ]
     ;; Print summary of current best restaurant and highest reward
     print (word "  Current best restaurant: " [current-best-restaurant] of courier-agent)
     print (word "  Current highest reward: " precision [current-highest-reward] of courier-agent 2)
-  ]
 end
 
 ;; Random movement behavior
@@ -1252,6 +1503,7 @@ to create-job
     setxy jobxcor jobycor
     set cluster-location [patch-here] of cluster [cluster-number] of temp-rest
     set restaurant-id [restaurant-id] of temp-rest
+    set restaurant-instance temp-rest
     set origin patch-here
     set destination (patch custxcor custycor)
     set shape "house"
@@ -1325,6 +1577,7 @@ to check-neighbourhood
         set to-destination? true
         set next-location [destination] of current-job
         face next-location
+        set going-to-rest nobody
 
         ;; Check if this was the last job at the restaurant
         let rest-id [restaurant-id] of current-job
@@ -1376,6 +1629,7 @@ to check-neighbourhood-level-zero
     set to-destination? true
     set next-location [destination] of current-job
     face next-location
+    set going-to-rest [restaurant-instance] of current-job
 
     ;; Check if this was the last job at the restaurant
     let remaining-jobs count jobs with [available? and restaurant-id = target-restaurant-id]
@@ -1418,7 +1672,7 @@ to check-on-location
           ]
         ]
       ][
-        ;; Returning to restaurant after delivery
+        ;; Returned to restaurant after delivery
         set status "waiting-for-next-job"
         set color orange
       ]
@@ -1492,10 +1746,12 @@ to at-destination
   set last-restaurant-id job-restaurant-id
   set has-done-job? true
 
+  set going-to-rest [restaurant-instance] of current-job
   ;; Remove the job instance
   ask current-job [
     die  ;; Remove completed job
   ]
+
   set current-job nobody  ;; Clear the current-job reference
 
   ;; Remove delivered-to customer
@@ -1513,8 +1769,8 @@ to at-destination
   ]
 
   ;; Determine next action based on autonomy level
-  ifelse autonomy-level = 0 and has-done-job? [
-    ;; Autonomy level 0: Always return to first restaurant
+  ifelse autonomy-level < 3 and has-done-job? [
+    ;; Autonomy level 0-1-2: Always return to first/last restaurant
     move-towards-specific-restaurant last-restaurant-id
   ][
     ;; Higher autonomy levels: Use memory or search
@@ -1524,6 +1780,7 @@ to at-destination
     ][
       set status "searching-for-next-job"  ;; Start searching if no memory
       set color green
+      set waiting-at-restaurant nobody
     ]
   ]
 
@@ -1547,17 +1804,20 @@ to move-towards-specific-restaurant [rest-id]
     set status "moving-towards-restaurant"
     set color blue  ;; Use blue for returning to restaurant
     set to-origin? false  ;; Not picking up, just returning
+    set going-to-rest [restaurant-instance] of current-job
+    set current-job nobody
   ][
     ;; If target restaurant doesn't exist, fallback to searching
     print (word "Bike " who " couldn't find target restaurant " rest-id)
     set status "searching-for-next-job"
     set color green
+    set waiting-at-restaurant nobody
   ]
 end
 
 ;; Evaluate rewards and adjust courier behavior
 to check-rewards
-    ;; For autonomy level 0, just check if we're at the destination
+;; For autonomy level 0, just check if we're at the destination
   if autonomy-level = 0 and has-done-job? [
     if status = "waiting-for-next-job" [
       ;; Check for jobs at this specific restaurant
@@ -1571,7 +1831,10 @@ to check-rewards
   if autonomy-level = 3 and learning-model = "Demand Prediction" and has-done-job? [
     ;; Use prediction-based decision making
     if status = "waiting-for-next-job" or status = "searching-for-next-job" [
-      ;; Decide whether to stay, search locally, or relocate based on heat map
+      ;; First ensure our heat map is up-to-date with latest faded values
+      ;update-heat-map
+
+      ;; Then decide whether to stay, search locally, or relocate based on heat map
       let current-location-key (word xcor "," ycor)
       let current-heat-score 0
 
@@ -1587,23 +1850,93 @@ to check-rewards
       if status = "waiting-for-next-job" [
         check-neighbourhood
       ]
-      print(word "Courier" who "has current-heat-score: " current-heat-score)
+
+      ;; Check if courier is already at the best restaurant
+      let at-best-restaurant? false
+      let actual-res-id best-restaurant-id + 1
+
+      if best-restaurant-id > 0 [
+        let best-restaurant one-of restaurants with [restaurant-id = best-restaurant-id]
+        if best-restaurant != nobody [
+          if (xcor = [xcor] of best-restaurant and ycor = [ycor] of best-restaurant) [
+            set at-best-restaurant? true
+            if debug-demand-prediction and (ticks mod 10 = 0) [
+             ; print (word "Courier #" who " is already at the best restaurant #" actual-res-id)
+            ]
+          ]
+        ]
+      ]
 
       ;; If we didn't find a job and current location score is low, consider moving
-      if status = "waiting-for-next-job" or status = "searching-for-next-job" [
+      if (status = "waiting-for-next-job")[
+        if debug-demand-prediction and (ticks mod debug-interval = 0) [
+           print "---------------------------------------------"
+            print (word " Courier: " who)
+            print (word "   Status: " status)
+           print (word "   Current Heat Score: " precision current-heat-score 2)
+        ]
         ifelse current-heat-score < free-moving-threshold [
+          if debug-demand-prediction[
+            print (word " Courier: " who)
+            print (word "   Status: " status)
+            print (word "   LEAVE RESTAURANT: Current Heat Score (" precision current-heat-score 2
+              ") < Threshold (" precision free-moving-threshold 2 ")")
+            ifelse best-restaurant-id > 0 [
+              print (word "   Best option: Restaurant # " best-restaurant-id)
+            ][
+              print (word "   No option with heat-score above threshold!")
+              print ("   Let's go exploring!")
+            ]
+          ]
 
           ;; Current location not promising, move to better restaurant
-          ifelse best-restaurant-id > 0 [
+          ifelse best-restaurant-id > 0 and not at-best-restaurant? [
+            if debug-demand-prediction[
+              print (word "   Moving To Restaurant # " best-restaurant-id)
+            ]
             move-towards-predicted-restaurant best-restaurant-id
           ][
-            set status "searching-for-next-job" ;; No good predictions, switch to searching
-            set color green
+            ;; Skip movement if already at best restaurant
+           ; ifelse at-best-restaurant? [
+           ;   if debug-demand-prediction and (ticks mod 10 = 0) [
+           ;     print "   Already at best restaurant, staying put"
+           ;   ]
+           ; ][
+            if debug-demand-prediction and  at-best-restaurant?[
+              print "   Already at best restaurant, let's explore!"
+            ]
+              set status "searching-for-next-job" ;; No good predictions, switch to searching
+              set color green
+              set waiting-at-restaurant nobody
+           ; ]
           ]
         ][
           ;; Current location is still promising, stay or search locally
           ifelse status = "waiting-for-next-job" [
-            ;; Already waiting, continue to wait
+            ;; Already waiting, continue to wait - will wait until a job in neighbourhood arrives
+
+            ;; Update temporal patterns to include that 0 demand has been found at the restaurant
+            if (ticks mod debug-interval = 0)[
+              let rest-id 0  ;; Default value
+              carefully [
+                ifelse is-agent? going-to-rest [
+                  set rest-id [restaurant-id] of going-to-rest
+                ][
+                  ifelse is-agentset? going-to-rest and any? going-to-rest [
+                    set rest-id [restaurant-id] of one-of going-to-rest
+                  ][
+                    print "Warning: going-to-rest is not a valid agent or agentset"
+                  ]
+                ]
+              ][
+                print error-message
+              ]
+              let reward-value 0
+              print "----------------------------------------------------------"
+              print "Updating temporal patterns because waiting at restaurant!"
+              print "----------------------------------------------------------"
+            update-temporal-patterns rest-id reward-value
+            ]
           ][
             ;; If searching, check if we should stay put
             let nearby-restaurant one-of restaurants in-radius 2
@@ -1612,6 +1945,7 @@ to check-rewards
               set status "waiting-for-next-job"
               set color orange
               setxy [xcor] of nearby-restaurant [ycor] of nearby-restaurant
+              set waiting-at-restaurant nearby-restaurant
             ]
           ]
         ]
@@ -1641,6 +1975,7 @@ to check-rewards
         if ((current-highest-reward < free-moving-threshold) and (memory-fade > 0)) [
           set status "searching-for-next-job"
           set color green
+          set waiting-at-restaurant nobody
         ]
       ]
 
@@ -1746,11 +2081,14 @@ to move-towards-best-restaurant
     set status "moving-towards-restaurant"
     set color blue
     set to-origin? false  ;; We're returning to a restaurant, not picking up
+    set going-to-rest temp-restaurant
+    set current-job nobody
   ][
     ;; Restaurant doesn't exist - go to searching mode instead
     print (word "Courier " who " couldn't find restaurant " temp-rest-id)
     set status "searching-for-next-job"
     set color green
+    set waiting-at-restaurant nobody
   ]
 end
 
@@ -1836,15 +2174,63 @@ to count-courier-activities
     print (word "Waiting: " waiting-couriers ", Returning: " returning-couriers ", Delivering: " delivering-couriers ", Searching: " searching-couriers ", To-Restaurant: " grey-couriers)
   ]
 end
+
+
+;; Reporter to calculate the average prediction weight of all couriers
+to-report avg-prediction-weight
+  ;; First check if there are any couriers using prediction
+  let prediction-couriers couriers with [
+    autonomy-level = 3 and
+    learning-model = "Demand Prediction"
+  ]
+
+  ;; If no couriers, return 0
+  if not any? prediction-couriers [
+    report 0
+  ]
+
+  ;; Calculate the average prediction weight
+  let total-weight sum [prediction-weight] of prediction-couriers
+  let courier-count count prediction-couriers
+
+  report total-weight / courier-count
+end
+
+;; Reporter to get a list of all courier prediction weights
+to-report all-prediction-weights
+  ;; First check if there are any couriers using prediction
+  let prediction-couriers couriers with [
+    autonomy-level = 3 and
+    learning-model = "Demand Prediction"
+  ]
+
+  ;; If no couriers, return empty list
+  if not any? prediction-couriers [
+    report "No prediction couriers"
+  ]
+
+  ;; Create a string representation of all weights
+  let weights-list []
+  ask prediction-couriers [
+    set weights-list lput precision prediction-weight 2 weights-list
+  ]
+
+  ;; Sort the list for better readability
+  set weights-list sort weights-list
+
+  ;; Convert to string with average at the beginning
+  let avg precision (sum weights-list / length weights-list) 2
+  report (word "Avg: " avg ", Values: " weights-list)
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
 10
-751
-552
+738
+539
 -1
 -1
-8.2
+8.0
 1
 10
 1
@@ -1907,7 +2293,7 @@ courier-population
 courier-population
 1
 100
-2.0
+1.0
 1
 1
 NIL
@@ -1922,7 +2308,7 @@ job-arrival-rate
 job-arrival-rate
 0
 100
-7.0
+0.0
 1
 1
 NIL
@@ -2001,7 +2387,7 @@ cluster-area-size
 cluster-area-size
 1
 20
-12.0
+10.0
 1
 1
 NIL
@@ -2042,7 +2428,7 @@ memory-fade
 memory-fade
 0
 20
-6.5
+10.0
 0.5
 1
 %
@@ -2159,7 +2545,7 @@ CHOOSER
 fade-strategy
 fade-strategy
 "None" "Linear" "Exponential" "Recency-weighted"
-2
+1
 
 SLIDER
 11
@@ -2170,7 +2556,7 @@ free-moving-threshold
 free-moving-threshold
 0
 50
-10.0
+15.0
 1
 1
 NIL
@@ -2208,7 +2594,7 @@ SWITCH
 205
 debug-memory
 debug-memory
-1
+0
 1
 -1000
 
@@ -2244,6 +2630,84 @@ opportunistic-switch
 1
 1
 -1000
+
+SLIDER
+392
+624
+564
+657
+switch-threshold
+switch-threshold
+10
+100
+45.0
+5
+1
+%
+HORIZONTAL
+
+SLIDER
+961
+137
+1133
+170
+debug-interval
+debug-interval
+0
+600
+120.0
+60
+1
+NIL
+HORIZONTAL
+
+SLIDER
+680
+589
+852
+622
+start-prediction-weight
+start-prediction-weight
+0
+1
+0.5
+0.05
+1
+NIL
+HORIZONTAL
+
+MONITOR
+883
+584
+1063
+629
+Prediction Weights
+all-prediction-weights
+2
+1
+11
+
+MONITOR
+1024
+529
+1105
+574
+Time of Day
+get-current-time-block
+2
+1
+11
+
+MONITOR
+993
+442
+1118
+487
+Prediction Accuracy
+prediction-accuracy
+2
+1
+11
 
 @#$#@#$#@
 ## WHAT IS IT?
