@@ -114,6 +114,9 @@ globals [
   learning-model        ;; Selected learning model from chooser
   prediction-accuracy   ;; Tracks how accurate predictions are
   time-blocks           ;; For temporal pattern recognition (e.g., morning, afternoon, evening)
+
+  previous-earnings        ;; List of previous courier earnings
+  earnings-update-interval ;; How often to update earnings (in ticks)
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -148,6 +151,14 @@ to setup
   set returning-couriers 0
   set delivering-couriers 0
   set searching-couriers 0
+
+  set earnings-update-interval 60
+  set previous-earnings []
+
+  ;; Initialize previous earnings after couriers are created
+  ask couriers [
+    set previous-earnings lput total-reward previous-earnings
+  ]
 end
 
 ;; Procedure to draw lines between clusters and their restaurants
@@ -354,6 +365,8 @@ to setup-restaurant-clusters
       set color white
       set cluster-number [who] of cluster-temp
       set restaurant-id current-restaurant
+      set label restaurant-id
+      set label-color black
       setxy [pxcor] of restaurant-patch [pycor] of restaurant-patch
     ]
 
@@ -476,6 +489,10 @@ to go
   if job-arrival-rate > random-float 100 [
     create-job
   ]
+
+  ;; Update earnings data
+  update-earnings-data
+
   tick
 end
 
@@ -488,7 +505,8 @@ end
 to-report get-current-time-block
   ;; Convert ticks to a time-of-day representation (24-hour cycle)
   ;; First convert ticks to minutes, then to hours
-  let time-of-day floor ((ticks mod 1440) / 3600) ; convert seconds to hours (0-23)
+  ;; Each tick represents 1 second, 14400 seconds = 4 hours
+  let time-of-day floor ((ticks mod 86400) / 3600) ; convert seconds to hours (0-23)
 
   ;; Return appropriate time block
   if time-of-day >= 0 and time-of-day < 4 [
@@ -521,8 +539,9 @@ to predict-demand [current-time-block]
 
   ;; For each restaurant, make a prediction
   let i 1
-  if debug-demand-prediction and (ticks mod 50 = 0)[
-    print("DEMAND PREDICTION")
+  if debug-demand-prediction and (ticks mod debug-interval = 0)[
+    print "=============== UPDATING DEMAND PREDICTION =============="
+    print (word "Current Tick: " ticks)
     print(word "   Courier: " who)
   ]
 
@@ -555,12 +574,13 @@ to predict-demand [current-time-block]
         let predicted-demand (current-block-value * prediction-weight) +
                            (recent-demand * (1 - prediction-weight))
 
-        if debug-demand-prediction and (ticks mod 50 = 0)[
+        if debug-demand-prediction and (ticks mod debug-interval = 0)[
           print(word "   Restaurant: " i)
           print(word "   Current Time Block: " current-time-block)
           print(word "   Current Time Block Value: " precision current-block-value 2)
           print(word "   Recent Demand: " precision recent-demand 2)
-          print(word "   Predicted Demand: " precision predicted-demand 2 " (Based on: "(prediction-weight * 100)"% Time Block /"((1 - prediction-weight) * 100)"% Recent History)")
+          print(word "   Predicted Demand: " precision predicted-demand 2 " (Based on: "(prediction-weight * 100)"% Time Block / "((1 - prediction-weight) * 100)"% Recent History)")
+          print "------------------------------"
         ]
         ;; Update prediction
         table:put demand-predictions i predicted-demand
@@ -590,7 +610,9 @@ to predict-demand [current-time-block]
 
     set i i + 1
   ]
-
+  if debug-demand-prediction and (ticks mod debug-interval = 0)[
+    print "=============== END DEMAND PREDICTION =============="
+  ]
   ;; Update heat map based on predictions
   update-heat-map
 end
@@ -603,6 +625,7 @@ to update-heat-map
 
   if debug-memory and (ticks mod debug-interval = 0)[
     print "=============== UPDATING HEATMAP ==============="
+    print (word "Current Tick: " ticks)
   ]
   ;; For each restaurant, update its heat map score in this courier's heat map
   let total-restaurants restaurant-clusters * restaurants-per-cluster
@@ -694,6 +717,7 @@ to re-evaluate-route-based-on-prediction
   if any? neighbourhood-jobs [
      ;; Debug - Found nearby jobs?
     if debug-demand-prediction and (ticks mod 10 = 0)[
+      print (word "Current Tick: " ticks)
       print (word "Courier: " who)
       print (word "  Found " count neighbourhood-jobs " jobs in neighbourhood")
     ]
@@ -715,6 +739,7 @@ to re-evaluate-route-based-on-prediction
       ifelse opportunistic-switch [
         ;; Always take best job if opportunistic switching is enabled
         if debug-demand-prediction[
+          print (word "Current Tick: " ticks)
           print (word "Courier: " who)
           print (word "  TAKING JOB: Opportunistic switching enabled, taking best job #" [who] of best-job)
         ]
@@ -760,9 +785,10 @@ to re-evaluate-route-based-on-prediction
         ]
 
         ;; Compare best job to current destination value
-        ifelse (not returning-to-restaurant?) or ([reward] of best-job > current-restaurant-value * 1.2) [
+        ifelse (not returning-to-restaurant?) or ([reward] of best-job > current-restaurant-value * (1 + switch-threshold / 100)) [
           ;; Take job if it's better than current destination or we're not returning anywhere specific
           if debug-demand-prediction[
+            print (word "Current Tick: " ticks)
             print (word "Courier: " who)
             print (word "  TAKING JOB: Job value (" precision [reward] of best-job 2 ") at Restaurant " [restaurant-id] of best-job " is better than going back to Restaurant " [restaurant-id] of going-to-rest  " with value (" precision current-restaurant-value 2 ")")
           ]
@@ -800,16 +826,11 @@ to re-evaluate-route-based-on-prediction
         let progress-so-far distance [destination] of current-job / origin-to-dest-distance
         let switching-cost current-reward * progress-so-far
 
-        ;; Debug - Switching cost calculation
-        if debug-demand-prediction and (ticks mod 10 = 0) [
-          print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
-            ", Switching cost: " precision switching-cost 2)
-        ]
-
         ;; Evaluate whether to switch based on opportunistic-switch or value comparison
         ifelse opportunistic-switch [
           ;; Always switch if opportunistic
           if debug-demand-prediction [
+            print (word "Current Tick: " ticks)
             print (word "Courier: " who)
             print (word "  SWITCHING JOBS: Opportunistic switching enabled")
           ]
@@ -842,7 +863,10 @@ to re-evaluate-route-based-on-prediction
           ifelse [reward] of best-job > switching-cost + current-reward [
             ;; Debug - Decision to switch
             if debug-demand-prediction[
+              print (word "Current Tick: " ticks)
               print (word "Courier: " who)
+              print (word "  Current progress: " precision (progress-so-far * 100) 1 "%"
+            ", Switching cost: " precision switching-cost 2)
               print (word "  SWITCHING JOBS: New reward (" precision [reward] of best-job 2
                 ") > Current remaining value (" precision (switching-cost + current-reward) 2 ")")
             ]
@@ -881,7 +905,7 @@ to re-evaluate-route-based-on-prediction
           ]
         ]
       ][
-        if debug-demand-prediction and (ticks mod 10 = 0) [
+        if debug-demand-prediction and (ticks mod 10 = 0)[
           print (word "  NOT SWITCHING: New job reward not significantly better (needs " switch-threshold"% improvement)")
         ]
       ]
@@ -891,23 +915,23 @@ end
 
 ;; Apply reinforcement learning (Learning and Adaptation)
 to apply-reinforcement-learning
-  ;; This is a placeholder for Autonomy 6 implementation
+  ;; This is a placeholder for Autonomy lvl. 3 implementation
   ;; Would contain actual reinforcement learning algorithm
 end
 
 ;; Apply learned decision (Learning and Adaptation)
 to apply-learned-decision
-  ;; This is a placeholder for Autonomy 6 implementation
+  ;; This is a placeholder for Autonomy lvl. 3 implementation
 end
 
 ;; Update learned values (Learning and Adaptation)
 to update-learned-values [rest-id reward-value]
-  ;; This is a placeholder for Autonomy 6 implementation
+  ;; This is a placeholder for Autonomy lvl. 3 implementation
 end
 
 ;; Re-evaluate route based on learning (Learning and Adaptation)
 to re-evaluate-route-based-on-learning
-  ;; This is a placeholder for Autonomy 6 implementation
+  ;; This is a placeholder for Autonomy lvl. 3 implementation
 end
 
 ;; Share information with nearby couriers (placeholder)
@@ -1004,11 +1028,11 @@ to debug-prediction-performance
 
           print (word "    Heat map has " length heat-map-list " entries")
 
-          ;; Sort by score and show top 3
+          ;; Sort by score and show top 10
           let sorted-locations sort-by [ [a b] -> last a > last b ] heat-map-list
           let count-shown 0
 
-          print "  Top 3 locations:"
+          print "  Top 10 locations:"
           foreach sorted-locations [ location-pair ->
             if count-shown < 10 [
               let loc-key first location-pair
@@ -1029,7 +1053,7 @@ to debug-prediction-performance
               ]
 
               ;; Print location with restaurant name
-              print (word "    " loc-key " (" restaurant-name "): " precision score 2)
+              print (word "    " loc-key " (" restaurant-name ") Heat Score: " precision score 2)
               set count-shown count-shown + 1
             ]
           ]
@@ -1058,7 +1082,7 @@ to debug-prediction-performance
   ;; Compare prediction vs. actual demand across restaurants
   print "  Restaurant Demand (Predicted vs. Actual):"
   let total-restaurants restaurant-clusters * restaurants-per-cluster
-  let sample-restaurants min list 8 total-restaurants
+  let sample-restaurants min list 10 total-restaurants
   print (word "  Analyzing " sample-restaurants " sample restaurants:")
   let i 1
   let restaurants-shown 0
@@ -1200,6 +1224,8 @@ to update-temporal-patterns [rest-id reward-value]
   if table:has-key? rest-time-patterns current-time-block [
     set current-value table:get rest-time-patterns current-time-block
   ]
+  print "=============== UPDATING TEMPORAL PATTERN ==============="
+  print (word "Current Tick: " ticks)
   print (word "Courier: " who)
   print (word "Updating temporal pattern for Restaurant: " rest-id)
   print (word "   Current Time Block Value: " precision current-value 2)
@@ -1262,6 +1288,7 @@ to update-temporal-patterns [rest-id reward-value]
     ]
 
     print (word "   New Prediction Weight: " precision prediction-weight 2)
+    print "========================================================="
   ]
 end
 
@@ -1884,7 +1911,7 @@ to check-rewards
             ifelse best-restaurant-id > 0 [
               print (word "   Best option: Restaurant # " best-restaurant-id)
             ][
-              print (word "   No option with heat-score above threshold!")
+              print (word "   No known restaurant with Heat Score above Threshold!")
               print ("   Let's go exploring!")
             ]
           ]
@@ -2222,6 +2249,48 @@ to-report all-prediction-weights
   let avg precision (sum weights-list / length weights-list) 2
   report (word "Avg: " avg ", Values: " weights-list)
 end
+
+to-report earnings-per-interval
+  let current-earnings []
+  let earnings-rates []
+
+  ;; Collect current earnings
+  ask couriers [
+    set current-earnings lput total-reward current-earnings
+  ]
+
+  ;; Only calculate if we have previous earnings and ticks > 0
+  ifelse not empty? previous-earnings and ticks > 0 [
+    ;; Calculate rate for each courier
+    let i 0
+    while [i < length current-earnings] [
+      let current-value item i current-earnings
+      let previous-value item i previous-earnings
+      let rate current-value - previous-value
+      set earnings-rates lput rate earnings-rates
+      set i i + 1
+    ]
+
+    ;; Update previous earnings for next calculation
+    set previous-earnings current-earnings
+
+    ;; Return earnings rates
+    report earnings-rates
+  ][
+    ;; If first run or no previous data, update previous earnings
+    ;; but report zeros to avoid division errors
+    set previous-earnings current-earnings
+    report n-values length current-earnings [0]
+  ]
+end
+
+to update-earnings-data
+  ;; Only update at the specified interval
+  if ticks mod earnings-update-interval = 0 [
+    ;; This updates previous-earnings and returns the rates
+    let rates earnings-per-interval
+  ]
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -2300,15 +2369,15 @@ NIL
 HORIZONTAL
 
 SLIDER
-781
-457
-953
-490
+15
+509
+187
+542
 job-arrival-rate
 job-arrival-rate
 0
 100
-0.0
+1.0
 1
 1
 NIL
@@ -2627,7 +2696,7 @@ SWITCH
 697
 opportunistic-switch
 opportunistic-switch
-1
+0
 1
 -1000
 
@@ -2640,7 +2709,7 @@ switch-threshold
 switch-threshold
 10
 100
-45.0
+30.0
 5
 1
 %
@@ -2708,6 +2777,60 @@ prediction-accuracy
 2
 1
 11
+
+PLOT
+1560
+10
+1760
+160
+Courier Rewards
+Time (ticks)
+Earnings
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "ifelse ticks > earnings-update-interval [plot mean earnings-per-interval][plot 0]"
+
+PLOT
+1147
+559
+1492
+709
+Courier Cumulative Earnings
+Time (ticks)
+Total Earnings
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "ifelse ticks >= 3600 [plot mean [total-reward / (ticks / 3600)] of couriers][plot 0]"
+
+PLOT
+1548
+401
+1748
+551
+Prediction Accuracy
+Ticks (time)
+Accuracy (%)
+0.0
+10.0
+0.0
+1.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "if prediction-accuracy > 0 [plot prediction-accuracy]"
 
 @#$#@#$#@
 ## WHAT IS IT?
