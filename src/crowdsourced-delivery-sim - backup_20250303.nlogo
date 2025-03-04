@@ -117,41 +117,7 @@ globals [
 
   previous-earnings        ;; List of previous courier earnings
   earnings-update-interval ;; How often to update earnings (in ticks)
-
-  ;; Global variables for experiment management
-  experiment-running?     ;; Whether an experiment is currently running
-  experiment-completed?   ;; Whether the current experiment has completed
-  experiment-configs      ;; List of parameter configurations to test
-  current-config          ;; The currently active configuration
-  current-run             ;; Current run number within configuration
-  max-runs                ;; Number of runs per configuration
-  run-ticks               ;; How many ticks to run each simulation
-  random-seed-base        ;; Base seed for random number generation
-  results-data            ;; Table to store results
-  data-export-path        ;; File path for exporting results
-
-  ;; KPI tracking
-  total-deliveries        ;; Total deliveries completed across all couriers
-  avg-delivery-time       ;; Average time from job creation to delivery
-  delivery-times          ;; List of all delivery completion times
-  courier-utilization     ;; Percentage of couriers actively delivering
-  waiting-time-total      ;; Total time couriers spend waiting
-  search-time-total       ;; Total time couriers spend searching
-  delivery-pay-total      ;; Total courier earnings
-
-  ;; Performance variability metrics
-  courier-earnings-sd     ;; Standard deviation of courier earnings
-  delivery-time-sd        ;; Standard deviation of delivery times
-  courier-deliveries-sd   ;; Standard deviation of deliveries per courier
-
-  ;; variables for analysis
-  analysis-data           ;; Table to store analyzed results
-  config-summary-stats    ;; Summary statistics by configuration
-  autonomy-comparison     ;; Specific comparison of autonomy levels
-  performance-variability ;; Measures of performance consistency
 ]
-
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                SETUP PROCEDURES                ;;
@@ -238,13 +204,6 @@ to setup-couriers
     set restaurant-list insert-item 0 restaurant-list self
   ]
 
-  if autonomy-level = 0 [
-    ;; Overwrite global variables when autonomy-level = 0 (this ensures that each restaurant has a courier)
-    set random-startingpoint-couriers False
-    let number-of-restaurants length restaurant-list
-    set courier-population number-of-restaurants
-  ]
-
   let i 1
 
   ;; Create each courier
@@ -253,7 +212,6 @@ to setup-couriers
     let courier-ycor 0
     let cur-status ""
     let cur-color grey
-    let temp-restaurant item 0 restaurant-list
 
     ;; Place courier either randomly or at a restaurant
     ifelse random-startingpoint-couriers [
@@ -263,11 +221,11 @@ to setup-couriers
       set cur-status "searching-for-next-job"
       set cur-color green
     ][
+      let temp-restaurant item 0 restaurant-list
       set courier-xcor [xcor] of temp-restaurant
       set courier-ycor [ycor] of temp-restaurant
       set cur-status "waiting-for-next-job"
       set cur-color orange
-
     ]
 
     ;; Create the courier agent
@@ -282,15 +240,7 @@ to setup-couriers
       set next-location nobody
       set jobs-performed []
       set has-done-job? false
-      ifelse autonomy-level = 0 [
-        set last-restaurant-id [restaurant-id] of temp-restaurant
-      ]
-      [
-        set last-restaurant-id -1  ;; Initialize with an invalid ID
-      ]
-
-
-
+      set last-restaurant-id -1  ;; Initialize with an invalid ID
       ;; Initialize reward tracking
       let total-restaurants restaurant-clusters * restaurants-per-cluster
       set reward-list n-values total-restaurants [0]
@@ -1272,24 +1222,20 @@ to update-temporal-patterns [rest-id reward-value]
   if table:has-key? rest-time-patterns current-time-block [
     set current-value table:get rest-time-patterns current-time-block
   ]
-
-  if debug-memory[
   print "=============== UPDATING TEMPORAL PATTERN ==============="
   print (word "Current Tick: " ticks)
   print (word "Courier: " who)
   print (word "Updating temporal pattern for Restaurant: " rest-id)
   print (word "   Current Time Block Value: " precision current-value 2)
-  ]
+
   ;; Update value with exponential moving average
 
   ;; Note: this value represents the expected reward for a given restaurant at a given time-block (e.g., 12-16).
   ;; This expected reward is specific a a courier. So views on the world might differen between courier agents based on their experience.
 
   let updated-value (current-value * (1 - learning-rate)) + (reward-value * learning-rate)
-
-  if debug-memory[
   print (word "   Updated Time Block Value: " precision updated-value 2)
-  ]
+
   ;; Store updated value
   table:put rest-time-patterns current-time-block updated-value
   table:put time-patterns rest-id rest-time-patterns
@@ -1298,16 +1244,14 @@ to update-temporal-patterns [rest-id reward-value]
   let predicted-demand table:get demand-predictions rest-id
   let prediction-error abs (predicted-demand - reward-value)
 
-  if debug-memory[
   print (word "   Predicted Demand: " predicted-demand)
   print (word "   Actual Reward: " predicted-demand)
   print (word "   Prediction Error: " prediction-error)
-  ]
+
   ;; Record prediction accuracy
   set prediction-history lput prediction-error prediction-history
-  if debug-memory[
   print (word "   Prediction Error History: " prediction-history)
-  ]
+
   if length prediction-history > 10 [
     ;; Keep only the last 10 predictions
     set prediction-history but-first prediction-history
@@ -1315,43 +1259,34 @@ to update-temporal-patterns [rest-id reward-value]
 
   ;; Adjust prediction weight based on accuracy
   let avg-error mean prediction-history
-  if debug-memory[
   print (word "   Avg. Prediction Error: " avg-error)
-  ]
 
   if avg-error > 0 [
     ;; Compare latest error to average error
     let latest-error last prediction-history
 
     let relative-error latest-error / (avg-error + 0.0001)  ;; Avoid division by zero
-    if debug-memory[
     print (word "   Relative Error: " relative-error)
     print (word "   Old Prediction Weight: " precision prediction-weight 2)
-    ]
     ;; If latest error is lower than average, reduce prediction weight (trust recent data more)
     ;; If latest error is higher than average, increase prediction weight (trust patterns more)
     ifelse relative-error < 0.8 [
       ;; Recent error is significantly lower - reduce weight to favor recent data
       ;set prediction-weight max list 0.1 (prediction-weight * 0.8)
-      if debug-memory[
       print (word "   Weight reduced to favor more accurate recent data")
-      ]
     ][
       ifelse relative-error > 1.2 [
         ;; Recent error is significantly higher - increase weight to rely on historical patterns
         ;set prediction-weight min list 0.9 (prediction-weight * 1.2)
-        if debug-memory[
         print (word "   Weight increased to favor more reliable historical patterns")
-        ]
       ][
         ;; Error is roughly in line with average - minor adjustment
         ;set prediction-weight max list 0.1 min list 0.9 (prediction-weight * (1 + (0.5 - relative-error) / 5))
       ]
     ]
-    if debug-memory[
+
     print (word "   New Prediction Weight: " precision prediction-weight 2)
     print "========================================================="
-    ]
   ]
 end
 
@@ -1622,14 +1557,13 @@ end
 
 ;; Check for available jobs in courier's neighborhood
 to check-neighbourhood
-    ;; For autonomy level 0, use the restricted version
-  if autonomy-level = 0 [
+    ;; For autonomy level 0, use a restricted version
+  if autonomy-level = 0 and has-done-job? [
     check-neighbourhood-level-zero
     stop
   ]
-
   ;; Check logic for higher autonomy levels
-  if autonomy-level > 0 and count jobs in-radius neighbourhood-size > 0 [
+  if count jobs in-radius neighbourhood-size > 0 [
     let test count jobs
    ; print (word "Courier:" who "Jobs in radius: " test)
     let temp-job one-of jobs in-radius neighbourhood-size
@@ -1655,7 +1589,7 @@ to check-neighbourhood
       if status = "waiting-for-next-job" [
         set memory-jobs memory-jobs + 1
       ]
-      if color = green [
+      if status = "searching-for-next-job" [
         set on-the-fly-jobs on-the-fly-jobs + 1
       ]
 
@@ -1828,7 +1762,7 @@ end
 ;; Handle courier arrival at customer
 to at-destination
   receive-reward
-  record-delivery [tick-number] of current-job
+
   ;; Store job information before removing it
   let temp-job-number [job-number] of current-job
   let job-restaurant-id [restaurant-id] of current-job
@@ -1849,8 +1783,12 @@ to at-destination
   if count customers-on patch-here > 0 [
     let temp-customers customers-on patch-here
     ask temp-customers [
-      if current-job = temp-job-number [
+      ifelse current-job = temp-job-number [
         die  ;; Remove completed customer
+      ][
+        if count customers-on patch-here = 1 [
+          print "debug customer not dead"
+        ]
       ]
     ]
   ]
@@ -1905,7 +1843,7 @@ end
 ;; Evaluate rewards and adjust courier behavior
 to check-rewards
 ;; For autonomy level 0, just check if we're at the destination
-  if autonomy-level = 0 [
+  if autonomy-level = 0 and has-done-job? [
     if status = "waiting-for-next-job" [
       ;; Check for jobs at this specific restaurant
       check-neighbourhood-level-zero
@@ -2019,11 +1957,9 @@ to check-rewards
                 print error-message
               ]
               let reward-value 0
-              if debug-memory[
               print "----------------------------------------------------------"
               print "Updating temporal patterns because waiting at restaurant!"
               print "----------------------------------------------------------"
-              ]
             update-temporal-patterns rest-id reward-value
             ]
           ][
@@ -2427,1102 +2363,6 @@ to update-earnings-data
     let rates earnings-per-interval
   ]
 end
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;              ANALYSIS PROCEDURES              ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; Load and analyze experimental results
-to analyze-experiment-results [file-path]
-  set analysis-data table:make
-  set config-summary-stats table:make
-
-  ;; Load data from CSV
-  carefully [
-    file-open file-path
-
-    ;; Skip header line
-    let header file-read-line
-
-    ;; Read each data line
-    while [not file-at-end?] [
-      let line file-read-line
-      let fields csv-to-list line
-
-      ;; Get configuration key and data
-      let config-key item 0 fields
-      let run-key item 1 fields
-
-      ;; Parse numeric data
-      let data []
-      let i 2
-      while [i < length fields] [
-        carefully [
-          set data lput read-from-string item i fields data
-        ][
-          set data lput 0 data  ;; Default to 0 if parsing fails
-        ]
-        set i i + 1
-      ]
-
-      ;; Store in analysis data
-      ifelse table:has-key? analysis-data config-key [
-        let config-data table:get analysis-data config-key
-        table:put config-data run-key data
-        table:put analysis-data config-key config-data
-      ][
-        let new-config-data table:make
-        table:put new-config-data run-key data
-        table:put analysis-data config-key new-config-data
-      ]
-    ]
-
-    file-close
-
-    ;; Calculate summary statistics
-    calculate-summary-statistics
-
-    ;; Compare autonomy levels
-    compare-autonomy-levels
-
-    ;; Analyze performance variability
-    analyze-performance-variability
-
-    ;; Display summary
-    print "Experiment results loaded and analyzed successfully."
-    print (word "Number of configurations: " table:length analysis-data)
-    print "Summary statistics calculated."
-
-  ][
-    print (word "Error loading results file: " error-message)
-  ]
-end
-
-;; Parse CSV line into list
-to-report csv-to-list [csv-line]
-  let result []
-  let current-field ""
-  let in-quotes? false
-  let chars []
-
-  ;; Convert string to character list
-  let i 0
-  while [i < length csv-line] [
-    set chars lput item i csv-line chars
-    set i i + 1
-  ]
-
-  ;; Parse fields
-  foreach chars [ c ->
-    if c = "\"" [
-      set in-quotes? not in-quotes?
-    ]
-
-    ifelse c = "," and not in-quotes? [
-      ;; End of field
-      set result lput current-field result
-      set current-field ""
-    ][
-      if c != "\"" [ ;; Skip quote characters
-        set current-field (word current-field c)
-      ]
-    ]
-  ]
-
-  ;; Add the last field
-  set result lput current-field result
-
-  report result
-end
-
-;; Calculate summary statistics for each configuration
-to calculate-summary-statistics
-  foreach table:keys analysis-data [ config-key ->
-    let config-data table:get analysis-data config-key
-    let summary-stats table:make
-
-    ;; For each metric (position in data array)
-    let metric-count 11 ;; Number of metrics
-    let metric-idx 0
-
-    while [metric-idx < metric-count] [
-      ;; Collect all values for this metric across runs
-      let metric-values []
-
-      foreach table:keys config-data [ run-key ->
-        let run-data table:get config-data run-key
-        set metric-values lput item metric-idx run-data metric-values
-      ]
-
-      ;; Calculate mean, min, max, and SD
-      let metric-mean mean metric-values
-      let metric-min min metric-values
-      let metric-max max metric-values
-      let metric-sd standard-deviation-report metric-values
-
-      ;; Store summary statistics
-      table:put summary-stats (word "metric_" metric-idx) (list metric-mean metric-min metric-max metric-sd)
-
-      set metric-idx metric-idx + 1
-    ]
-
-    ;; Store configuration summary
-    table:put config-summary-stats config-key summary-stats
-  ]
-end
-
-;; Compare autonomy levels specifically
-to compare-autonomy-levels
-  ;; Find configurations that only vary by autonomy level
-  let autonomy-configs []
-
-  foreach table:keys analysis-data [ config-key ->
-    ;; Check if this configuration is an autonomy test
-    if position "autonomy-level" config-key != false [
-      set autonomy-configs lput config-key autonomy-configs
-    ]
-  ]
-
-  ;; Group by autonomy level
-  let autonomy-0-data []
-  let autonomy-1-data []
-  let autonomy-2-data []
-  let autonomy-3-data []
-
-  foreach autonomy-configs [ config-key ->
-    ifelse position "autonomy-level=0" config-key != false [
-      set autonomy-0-data lput config-key autonomy-0-data
-    ][
-      ifelse position "autonomy-level=1" config-key != false [
-        set autonomy-1-data lput config-key autonomy-1-data
-      ][
-        ifelse position "autonomy-level=2" config-key != false [
-          set autonomy-2-data lput config-key autonomy-2-data
-        ][
-          if position "autonomy-level=3" config-key != false [
-            set autonomy-3-data lput config-key autonomy-3-data
-          ]
-        ]
-      ]
-    ]
-  ]
-
-  ;; Calculate averages across each autonomy level for key metrics
-  set autonomy-comparison table:make
-
-  ;; Key metrics to analyze: Deliveries (0), Avg Time (1), Earnings (3), Utilization (7)
-  let metrics-to-compare [0 1 3 7]
-  let metric-names ["TotalDeliveries" "AvgDeliveryTime" "AvgEarnings" "CourierUtilization"]
-
-  let autonomy-levels [0 1 2 3]
-  let autonomy-data-lists (list autonomy-0-data autonomy-1-data autonomy-2-data autonomy-3-data)
-
-  let metric-idx 0
-  foreach metrics-to-compare [ metric ->
-    let metric-name item metric-idx metric-names
-    let metric-results []
-
-    let level-idx 0
-    foreach autonomy-levels [ level ->
-      let level-configs item level-idx autonomy-data-lists
-      let level-values []
-
-      ;; Get all values for this level and metric
-      foreach level-configs [ config-key ->
-        let summary-stats table:get config-summary-stats config-key
-        let metric-stats table:get summary-stats (word "metric_" metric)
-        let metric-mean first metric-stats
-        set level-values lput metric-mean level-values
-      ]
-
-      ;; Calculate average for this autonomy level
-      let level-avg 0
-      ifelse not empty? level-values [
-        set level-avg mean level-values
-      ][
-        set level-avg -1  ;; Indicates no data
-      ]
-
-      set metric-results lput level-avg metric-results
-      set level-idx level-idx + 1
-    ]
-
-    ;; Store results for this metric
-    table:put autonomy-comparison metric-name metric-results
-
-    set metric-idx metric-idx + 1
-  ]
-
-  ;; Print comparison
-  print "Autonomy Level Comparison:"
-  foreach metric-names [ metric-name ->
-    let values table:get autonomy-comparison metric-name
-    print (word metric-name ": ")
-    let level-idx 0
-    foreach autonomy-levels [ level ->
-      let value item level-idx values
-      ifelse value >= 0 [
-        print (word "  Level " level ": " precision value 2)
-      ][
-        print (word "  Level " level ": No data")
-      ]
-      set level-idx level-idx + 1
-    ]
-  ]
-end
-
-
-;; Analyze performance variability
-to analyze-performance-variability
-  set performance-variability table:make
-
-  foreach table:keys config-summary-stats [ config-key ->
-    let summary-stats table:get config-summary-stats config-key
-
-    ;; Get variability metrics
-    let earnings-var item 3 table:get summary-stats "metric_4"  ;; EarningsSD
-    let delivery-time-var item 3 table:get summary-stats "metric_2"  ;; DeliveryTimeSD
-    let deliveries-var item 3 table:get summary-stats "metric_6"  ;; DeliveriesPerCourierSD
-
-    ;; Store variability metrics
-    table:put performance-variability config-key (list earnings-var delivery-time-var deliveries-var)
-  ]
-
-  ;; Print variability analysis
-  print "Performance Variability Analysis:"
-  foreach table:keys performance-variability [ config-key ->
-    let variability-metrics table:get performance-variability config-key
-    print (word config-key ":")
-    print (word "  Earnings Variability: " precision (item 0 variability-metrics) 2)
-    print (word "  Delivery Time Variability: " precision (item 1 variability-metrics) 2)
-    print (word "  Deliveries Variability: " precision (item 2 variability-metrics) 2)
-  ]
-end
-
-;; Setup comparative plots for visualization
-to setup-comparative-plots
-  clear-all-plots
-
-  ;; Plot autonomy level comparison
-  if table:length autonomy-comparison > 0 [
-    set-current-plot "Autonomy Level Comparison"
-
-    ;; Plot deliveries by autonomy level
-    set-current-plot-pen "Deliveries"
-    let delivery-values table:get autonomy-comparison "TotalDeliveries"
-    let i 0
-    foreach delivery-values [ val ->
-      plotxy i val
-      set i i + 1
-    ]
-
-    ;; Plot earnings by autonomy level
-    set-current-plot-pen "Earnings"
-    set i 0
-    let earnings-values table:get autonomy-comparison "AvgEarnings"
-    foreach earnings-values [ val ->
-      plotxy i val
-      set i i + 1
-    ]
-
-    ;; Plot utilization by autonomy level
-    set-current-plot-pen "Utilization"
-    set i 0
-    let util-values table:get autonomy-comparison "CourierUtilization"
-    foreach util-values [ val ->
-      plotxy i (val * 100)  ;; Convert to percentage
-      set i i + 1
-    ]
-  ]
-
-  ;; Plot variability measures
-  if table:length performance-variability > 0 [
-    set-current-plot "Performance Variability"
-
-    ;; Find autonomy configs
-    let autonomy-configs []
-    let i 0
-    repeat 4 [
-      let autonomy-level-val i
-      let matching-configs filter [config -> position (word "autonomy-level=" autonomy-level-val) config != false] table:keys performance-variability
-
-      ifelse not empty? matching-configs [
-        let config-key first matching-configs
-        let variability-metrics table:get performance-variability config-key
-
-        ;; Plot earnings variability
-        set-current-plot-pen "Earnings Var"
-        plotxy i item 0 variability-metrics
-
-        ;; Plot delivery time variability
-        set-current-plot-pen "Time Var"
-        plotxy i item 1 variability-metrics
-
-        ;; Plot deliveries variability
-        set-current-plot-pen "Deliveries Var"
-        plotxy i item 2 variability-metrics
-      ][
-        ;; No data for this autonomy level
-      ]
-
-      set i i + 1
-    ]
-  ]
-end
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;              EXPERIMENT PROCEDURES            ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; Define experiment configurations
-to setup-experiments
-  ;; Initialize experiment-running? if it hasn't been initialized yet
-  if not is-boolean? experiment-running? [
-    set experiment-running? false
-  ]
-
-  if experiment-running? [
-    user-message "An experiment is already running. Please wait for it to complete or stop it manually."
-    stop
-  ]
-
-  ;; Initialize experiment variables
-  set experiment-running? true
-  set experiment-completed? false
-  set current-run 1
-  set experiment-configs []
-  set results-data table:make
-
-  ;; Get experiment parameters from interface
-  set max-runs experiment-runs-per-config
-  set run-ticks experiment-ticks-per-run
-  set random-seed-base experiment-base-seed
-  set data-export-path (word "courier_experiment_results_" date-and-time-report ".csv")
-
-  ;; Build configuration list based on user selections
-  build-configuration-list
-
-  ;; If no configurations, stop
-  if empty? experiment-configs [
-    user-message "No experiment configurations defined."
-    set experiment-running? false
-    stop
-  ]
-
-  ;; Set first configuration and initialize
-  set current-config first experiment-configs
-  setup-configuration current-config
-  reset-kpis
-
-  ;; Create results data structure
-  ;initialize-results-table
-
-  ;; Display experiment info
-  print (word "Starting experiment with " length experiment-configs " configurations, "
-    max-runs " runs per configuration, for " run-ticks " ticks each.")
-  print (word "Base random seed: " random-seed-base)
-  print "First configuration:"
-  print current-config
-end
-
-;; Build list of configurations to test
-to build-configuration-list
-  ;; If testing autonomy levels
-  if vary-autonomy? [
-    let autonomy-values [0 1 2 3]
-
-    foreach autonomy-values [ a-val ->
-      ;; Create a list containing a single parameter pair
-      let config (list (list "autonomy-level" a-val))
-
-      ;; If also varying cooperativeness
-      ifelse vary-cooperativeness? [
-        let coop-values [1 2 3]
-
-        foreach coop-values [ c-val ->
-          ;; Create a list containing two parameter pairs
-          let combined-config (list (list "autonomy-level" a-val) (list "cooperativeness-level" c-val))
-          set experiment-configs lput combined-config experiment-configs
-        ]
-      ][
-        ;; Just autonomy variation
-        set experiment-configs lput config experiment-configs
-      ]
-    ]
-  ]
-  ;; If testing memory effects
-  if vary-memory? [
-    ;; Combinations of use-memory and memory-fade
-    let memory-settings [[true 0.5] [true 5] [true 10] [false 0]]
-
-    foreach memory-settings [ mem-setting ->
-      ;; Create a list of parameter pairs
-      let config (list
-        (list "use-memory" first mem-setting)
-        (list "memory-fade" last mem-setting)
-      )
-      set experiment-configs lput config experiment-configs
-    ]
-  ]
-
-  ;; If testing prediction weight for Autonomy Level 3
-  if vary-prediction-weight? [
-    let weight-values [0.1 0.3 0.5 0.7 0.9]
-
-    foreach weight-values [ w-val ->
-      ;; Create a list of parameter pairs
-      let config (list
-        (list "autonomy-level" 3)
-        (list "start-prediction-weight" w-val)
-      )
-      set experiment-configs lput config experiment-configs
-    ]
-  ]
-
-  ;; Add any additional custom configurations if specified
-  if include-custom-configs? [
-    ;; Example: Add a custom configuration with multiple parameters
-    set experiment-configs lput (list
-      (list "autonomy-level" 3)
-      (list "use-memory" true)
-      (list "memory-fade" 5)
-    ) experiment-configs
-  ]
-end
-
-;; Initialize the results data table
-to initialize-results-table
-
-  ;; Only proceed with foreach if we have configurations
-  ifelse not empty? experiment-configs [
-    foreach experiment-configs [ config ->
-      let config-key config-to-string config
-      table:put results-data config-key table:make
-    ]
-  ][
-    ;; Handle case where there are no configurations
-    print "Warning: No experiment configurations to initialize in results table."
-  ]
-end
-
-;; Convert configuration to string key for table
-to-report config-to-string [config]
-  let result ""
-
-  ;; First add all explicitly set parameters from the configuration
-  foreach config [ param-pair ->
-    set result (word result first param-pair "=" last param-pair "_")
-  ]
-
-  ;; Remove trailing underscore if it exists
-  if not empty? result and last result = "_" [
-    set result substring result 0 (length result - 1)
-  ]
-
-  report result
-end
-
-;; Generate a detailed configuration description for reporting
-to-report detailed-config-description [config]
-  let base-config config-to-string config
-
-  ;; Add additional relevant parameters that might not be explicitly set in the config
-  let detailed-config (word base-config "_")
-
-  ;; Only add parameters not already in the config
-  if not member? "courier-population" first-items config [
-    set detailed-config (word detailed-config "couriers=" courier-population "_")
-  ]
-
-  if not member? "neighbourhood-size" first-items config [
-    set detailed-config (word detailed-config "neighbourhood=" neighbourhood-size "_")
-  ]
-
-  if not member? "job-arrival-rate" first-items config [
-    set detailed-config (word detailed-config "jobRate=" job-arrival-rate "_")
-  ]
-
-  if not member? "use-memory" first-items config [
-    set detailed-config (word detailed-config "memory=" use-memory "_")
-  ]
-
-  if not member? "memory-fade" first-items config and use-memory [
-    set detailed-config (word detailed-config "memoryFade=" memory-fade "_")
-  ]
-
-  if not member? "fade-strategy" first-items config and use-memory [
-    set detailed-config (word detailed-config "fadeStrategy=" fade-strategy "_")
-  ]
-
-  if not member? "cooperativeness-level" first-items config [
-    set detailed-config (word detailed-config "coop=" cooperativeness-level "_")
-  ]
-
-  if not member? "learning-model-chooser" first-items config and autonomy-level = 3 [
-    set detailed-config (word detailed-config "learningModel=" learning-model-chooser "_")
-  ]
-
-  if not member? "start-prediction-weight" first-items config and
-     autonomy-level = 3 and learning-model-chooser = "Demand Prediction" [
-    set detailed-config (word detailed-config "predWeight=" start-prediction-weight "_")
-  ]
-
-  if not member? "restaurant-clusters" first-items config [
-    set detailed-config (word detailed-config "clusters=" restaurant-clusters "_")
-  ]
-
-  if not member? "restaurants-per-cluster" first-items config [
-    set detailed-config (word detailed-config "restsPerCluster=" restaurants-per-cluster "_")
-  ]
-
-  if not member? "restaurants-cluster-size" first-items config [
-    set detailed-config (word detailed-config "restsClusterSize=" cluster-area-size "_")
-  ]
-
-  if not member? "opportunistic-switch" first-items config and autonomy-level = 3 [
-    set detailed-config (word detailed-config "oppSwitch=" opportunistic-switch "_")
-  ]
-
-  if not member? "switch-threshold" first-items config and autonomy-level = 3 [
-    set detailed-config (word detailed-config "switchThresh=" switch-threshold "_")
-  ]
-
-  ;; Remove trailing underscore
-  if not empty? detailed-config and last detailed-config = "_" [
-    set detailed-config substring detailed-config 0 (length detailed-config - 1)
-  ]
-
-  report detailed-config
-end
-
-;; Helper to get first items from each pair in a list of pairs
-to-report first-items [pairs-list]
-  let result []
-  foreach pairs-list [ pair ->
-    set result lput first pair result
-  ]
-  report result
-end
-
-;; Apply a configuration to the simulation
-to setup-configuration [config]
-  ;; Set the random seed based on configuration and run number
-  let current-seed random-seed-base + current-run
-  random-seed current-seed
-
-  ;; Store experiment variables that need to be preserved
-  let temp-experiment-running? experiment-running?
-  let temp-experiment-completed? experiment-completed?
-  let temp-experiment-configs experiment-configs
-  let temp-current-config current-config
-  let temp-current-run current-run
-  let temp-max-runs max-runs
-  let temp-run-ticks run-ticks
-  let temp-random-seed-base random-seed-base
-  let temp-results-data results-data
-  let temp-data-export-path data-export-path
-
-  ;; Clear the simulation without using clear-all
-  clear-turtles
-  clear-patches
-  clear-drawing
-  clear-all-plots
-  clear-output
-
-  ;; Restore experiment variables
-  set experiment-running? temp-experiment-running?
-  set experiment-completed? temp-experiment-completed?
-  set experiment-configs temp-experiment-configs
-  set current-config temp-current-config
-  set current-run temp-current-run
-  set max-runs temp-max-runs
-  set run-ticks temp-run-ticks
-  set random-seed-base temp-random-seed-base
-  set results-data temp-results-data
-  set data-export-path temp-data-export-path
-
-  ;; Apply the configuration parameters
-  foreach config [ param-pair ->
-    let param-name first param-pair
-    let param-value last param-pair
-
-    run (word "set " param-name " " param-value)
-  ]
-
-  ;; Run the regular setup with these parameters
-  ;; Call a modified setup procedure that doesn't use clear-all
-  setup-for-experiment
-
-  ;; Reset KPI tracking
-  reset-kpis
-end
-
-;; Modified setup procedure that doesn't use clear-all
-to setup-for-experiment
-  ;; Initialize model without clearing globals
-  ;; Copy the contents of your original setup procedure here,
-  ;; but remove any clear-all or reset-ticks calls
-
-  ;; Example (modify to match your actual setup procedure):
-  set-default-shape turtles "bug"
-  setup-restaurant-clusters
-  setup-couriers
-
-  ;; After creating restaurants and clusters, draw the connecting lines
-  if show-cluster-lines? [
-    draw-cluster-lines
-  ]
-
-  ;; Reset counters but preserve experiment variables
-  set job-no 0
-  set on-the-fly-jobs 0
-  set memory-jobs 0
-  set waiting-couriers 0
-  set returning-couriers 0
-  set delivering-couriers 0
-  set searching-couriers 0
-
-  ;; Reset-ticks is safe to call
-  reset-ticks
-end
-
-;; Reset KPI tracking variables
-to reset-kpis
-  set total-deliveries 0
-  set avg-delivery-time 0
-  set delivery-times []
-  set courier-utilization 0
-  set waiting-time-total 0
-  set search-time-total 0
-  set delivery-pay-total 0
-  set courier-earnings-sd 0
-  set delivery-time-sd 0
-  set courier-deliveries-sd 0
-end
-
-;; Run the experiment
-to run-experiment
-  if not experiment-running? [
-    user-message "No experiment is set up. Please run setup-experiments first."
-    stop
-  ]
-
-  if experiment-completed? [
-    user-message "Experiment already completed. Please set up a new experiment."
-    stop
-  ]
-
-  ;; Main experiment loop - continues until all configurations and runs are complete
-  while [not empty? experiment-configs] [
-    ;; Run the current configuration for the specified number of ticks
-    repeat run-ticks [
-      go
-
-      ;; Update KPIs during run
-      update-kpis
-    ]
-
-    ;; Collect data for this run
-    collect-run-data
-
-    ;; Check if we need to move to the next run or configuration
-    ifelse current-run < max-runs [
-      ;; Move to next run with the same configuration
-      set current-run current-run + 1
-      setup-configuration current-config
-    ][
-      ;; Move to the next configuration
-      set experiment-configs but-first experiment-configs
-      set current-run 1
-
-      ;; If more configurations remain, set up the next one
-      ifelse not empty? experiment-configs [
-        set current-config first experiment-configs
-        setup-configuration current-config
-      ][
-        ;; All experiments completed
-        set experiment-completed? true
-        set experiment-running? false
-      ]
-    ]
-  ]
-
-  ;; Export results when all experiments are complete
-  export-results
-
-  ;; Display completion message
-  print "Experiment completed successfully."
-  print (word "Results exported to: " data-export-path)
-end
-
-;; Update KPIs during a run
-to update-kpis
-  ;; Track courier statuses for utilization metrics
-  let active-couriers count couriers with [status = "on-job"]
-  let waiting-couriers-val count couriers with [status = "waiting-for-next-job"]
-  let searching-couriers-val count couriers with [status = "searching-for-next-job"]
-
-  ;; Update waiting and searching time totals
-  set waiting-time-total waiting-time-total + waiting-couriers-val
-  set search-time-total search-time-total + searching-couriers-val
-
-  ;; Calculate instantaneous utilization
-  let utilization 0
-  if count couriers > 0 [
-    set utilization active-couriers / count couriers
-  ]
-
-  ;; Update courier utilization (moving average)
-  ifelse courier-utilization = 0 [
-    set courier-utilization utilization
-  ][
-    set courier-utilization (courier-utilization * 0.95) + (utilization * 0.05)
-  ]
-end
-
-;; Collect data at the end of a run
-;; Collect data at the end of a run
-to collect-run-data
-  ;; Calculate final KPIs
-
-  ;; Delivery completion metrics
-  set total-deliveries length delivery-times
-
-  ifelse not empty? delivery-times [
-    set avg-delivery-time mean delivery-times
-    set delivery-time-sd standard-deviation delivery-times
-  ][
-    set avg-delivery-time 0
-    set delivery-time-sd 0
-  ]
-
-  ;; Courier earnings metrics
-  let earnings []
-  ask couriers [ set earnings lput total-reward earnings ]
-  let avg-earnings 0
-  ifelse not empty? earnings [
-    set avg-earnings mean earnings
-    set courier-earnings-sd standard-deviation earnings
-  ][
-    set avg-earnings 0
-    set courier-earnings-sd 0
-  ]
-
-  ;; Deliveries per courier metrics
-  let deliveries-per-courier []
-  ask couriers [ set deliveries-per-courier lput length jobs-performed deliveries-per-courier ]
-  let avg-deliveries-per-courier 0
-  ifelse not empty? deliveries-per-courier [
-    set avg-deliveries-per-courier mean deliveries-per-courier
-    set courier-deliveries-sd standard-deviation deliveries-per-courier
-  ][
-    set avg-deliveries-per-courier 0
-    set courier-deliveries-sd 0
-  ]
-
-  ;; Utilization percentages
-  let total-courier-ticks count couriers * run-ticks
-  let waiting-percentage 0
-  let searching-percentage 0
-
-  if total-courier-ticks > 0 [
-    set waiting-percentage (waiting-time-total / total-courier-ticks) * 100
-    set searching-percentage (search-time-total / total-courier-ticks) * 100
-  ]
-
-  ;; Calculate earnings per hour (1 tick = 1 second, so 3600 ticks = 1 hour)
-  let earnings-per-hour 0
-  if run-ticks > 0 [
-    set earnings-per-hour (sum earnings) / (run-ticks / 3600)
-  ]
-
-  ;; NEW: Calculate job type metrics
-  ;; Calculate ratio of on-the-fly jobs vs memory jobs
-  let job-type-ratio 0
-  if memory-jobs > 0 [
-    set job-type-ratio on-the-fly-jobs / memory-jobs
-  ]
-
-  ;; Get ratio per courier if we're tracking per-courier
-  let courier-job-type-ratios []
-  let courier-on-the-fly-jobs []
-  let courier-memory-jobs []
-  let courier-total-jobs []
-
-  ask couriers [
-    ;; This would require tracking job types per courier
-    ;; Here we're just tracking total jobs per courier
-    let total-courier-jobs length jobs-performed
-    set courier-total-jobs lput total-courier-jobs courier-total-jobs
-  ]
-
-  ;; Calculate average and SD of courier job counts
-  let avg-jobs-per-courier 0
-  let sd-jobs-per-courier 0
-
-  ifelse not empty? courier-total-jobs [
-    set avg-jobs-per-courier mean courier-total-jobs
-    set sd-jobs-per-courier standard-deviation courier-total-jobs
-  ][
-    set avg-jobs-per-courier 0
-    set sd-jobs-per-courier 0
-  ]
-
-  ;; Create results entry
-  let config-key config-to-string current-config
-
-  ;; Check if the key exists in the results table
-  ifelse table:has-key? results-data config-key [
-    let run-results table:get results-data config-key
-
-    ;; Store results for this run
-    table:put run-results (word "run_" current-run) (list
-      total-deliveries
-      avg-delivery-time
-      delivery-time-sd
-      avg-earnings
-      courier-earnings-sd
-      avg-deliveries-per-courier
-      courier-deliveries-sd
-      courier-utilization
-      waiting-percentage
-      searching-percentage
-      earnings-per-hour
-      on-the-fly-jobs            ;; NEW: Jobs found while searching
-      memory-jobs                ;; NEW: Jobs found at restaurant
-      job-type-ratio             ;; NEW: Ratio of on-the-fly to memory jobs
-      avg-jobs-per-courier       ;; NEW: Average jobs per courier
-      sd-jobs-per-courier        ;; NEW: Standard deviation of jobs per courier
-    )
-
-    ;; Update the results data
-    table:put results-data config-key run-results
-  ][
-    ;; Handle the case where the key doesn't exist
-    print (word "Error: Configuration key '" config-key "' not found in results table.")
-    print "Available keys: "
-    foreach table:keys results-data [ k ->
-      print (word "  " k)
-    ]
-
-    ;; Create a new entry for this configuration
-    let new-run-results table:make
-    table:put new-run-results (word "run_" current-run) (list
-      total-deliveries
-      avg-delivery-time
-      delivery-time-sd
-      avg-earnings
-      courier-earnings-sd
-      avg-deliveries-per-courier
-      courier-deliveries-sd
-      courier-utilization
-      waiting-percentage
-      searching-percentage
-      earnings-per-hour
-      on-the-fly-jobs            ;; NEW: Jobs found while searching
-      memory-jobs                ;; NEW: Jobs found at restaurant
-      job-type-ratio             ;; NEW: Ratio of on-the-fly to memory jobs
-      avg-jobs-per-courier       ;; NEW: Average jobs per courier
-      sd-jobs-per-courier        ;; NEW: Standard deviation of jobs per courier
-    )
-
-    ;; Add to results data
-    table:put results-data config-key new-run-results
-  ]
-end
-
-;; Export results to a CSV file with enhanced configuration information
-to export-results
-  ;; Create headers for CSV with additional job metrics
-  let csv-text "Configuration,DetailedConfiguration,Run,TotalDeliveries,AvgDeliveryTime,DeliveryTimeSD,AvgEarnings,EarningsSD,AvgDeliveriesPerCourier,DeliveriesPerCourierSD,CourierUtilization,WaitingPercentage,SearchingPercentage,EarningsPerHour,OnTheFlyJobs,MemoryJobs,JobTypeRatio,AvgJobsPerCourier,JobsPerCourierSD\n"
-
-  ;; For each configuration
-  foreach table:keys results-data [ config-key ->
-    let config-results table:get results-data config-key
-
-    ;; Find the original configuration object for this key
-    let matching-config nobody
-    foreach experiment-configs [ config ->
-      if config-to-string config = config-key [
-        set matching-config config
-      ]
-    ]
-
-    ;; If config not found, create a placeholder
-    if matching-config = nobody [
-      ;; Try to parse the config key back into a config object
-      set matching-config parse-config-string config-key
-    ]
-
-    ;; Generate detailed configuration description
-    let detailed-config detailed-config-description matching-config
-
-    ;; For each run of this configuration
-    foreach table:keys config-results [ run-key ->
-      let run-data table:get config-results run-key
-
-      ;; Add line to CSV with explicit quotes around values
-      set csv-text (word csv-text
-        "\"" config-key "\",\""
-        detailed-config "\","
-        run-key ","
-        item 0 run-data ",\""
-        precision (item 1 run-data) 4 "\",\""
-        precision (item 2 run-data) 4 "\",\""
-        precision (item 3 run-data) 4 "\",\""
-        precision (item 4 run-data) 4 "\",\""
-        precision (item 5 run-data) 4 "\",\""
-        precision (item 6 run-data) 4 "\",\""
-        precision (item 7 run-data) 4 "\",\""
-        precision (item 8 run-data) 4 "\",\""
-        precision (item 9 run-data) 4 "\",\""
-        precision (item 10 run-data) 4 "\","
-
-        ;; Add new job metrics
-        item 11 run-data ",\"" ;; OnTheFlyJobs
-        item 12 run-data "\",\"" ;; MemoryJobs
-        precision (item 13 run-data) 4 "\",\"" ;; JobTypeRatio
-        precision (item 14 run-data) 4 "\",\"" ;; AvgJobsPerCourier
-        precision (item 15 run-data) 4 "\"" ;; JobsPerCourierSD
-        "\n"
-      )
-    ]
-  ]
-
-  ;; Write to file
-  carefully [
-    file-open data-export-path
-    file-print csv-text
-    file-close
-
-    print (word "Results successfully exported to: " data-export-path)
-    print "File can be imported into Excel or other analysis software."
-  ][
-    print (word "Error writing to file: " error-message)
-  ]
-end
-
-;; Helper to parse a config string back into a config object
-to-report parse-config-string [config-string]
-  let result []
-
-  ;; Split by underscore
-  let parts []
-  let current-part ""
-  let i 0
-
-  ;; Parse each parameter pair from the string
-  while [i < length config-string] [
-    let char item i config-string
-
-    ifelse char = "_" [
-      ;; End of parameter pair
-      if not empty? current-part [
-        set parts lput current-part parts
-        set current-part ""
-      ]
-    ][
-      set current-part (word current-part char)
-    ]
-
-    set i i + 1
-  ]
-
-  ;; Add the last part if it exists
-  if not empty? current-part [
-    set parts lput current-part parts
-  ]
-
-  ;; Convert each part into a parameter pair
-  foreach parts [ part ->
-    let equals-pos position "=" part
-
-    if equals-pos != false [
-      let param-name substring part 0 equals-pos
-      let param-value substring part (equals-pos + 1) (length part)
-
-      ;; Try to convert value to appropriate type
-      let typed-value param-value
-
-      carefully [
-        ;; Try to convert to number
-        set typed-value read-from-string param-value
-      ][
-        ;; If conversion fails, keep as string
-        if param-value = "true" [set typed-value true]
-        if param-value = "false" [set typed-value false]
-      ]
-
-      set result lput (list param-name typed-value) result
-    ]
-  ]
-
-  report result
-end
-
-;; Record delivery time when a job is completed
-to record-delivery [job-tick]
-  ;; Ensure delivery-times is initialized as a list
-  if delivery-times = 0 or not is-list? delivery-times [
-    set delivery-times []
-  ]
-
-  ;; Calculate completion time
-  let completion-time ticks - job-tick
-
-  ;; Add to list and update counter
-  set delivery-times lput completion-time delivery-times
-  set total-deliveries total-deliveries + 1
-end
-
-;; Calculate standard deviation
-to-report standard-deviation-report [number-list]
-  ;; Requires list to have at least two numbers
-  if length number-list < 2 [
-    report 0
-  ]
-
-  let avg mean number-list
-  let variance-sum 0
-
-  foreach number-list [ x ->
-    set variance-sum variance-sum + (x - avg) ^ 2
-  ]
-
-  ;; Calculate sample standard deviation
-  report sqrt (variance-sum / (length number-list - 1))
-end
-
-;; Helper function to get current date and time as a string
-to-report date-and-time-report
-  let date-string (word date-and-time "")
-  ;; Replace spaces, colons and other characters that might be problematic in filenames
-  set date-string replace-all date-string " " "_"
-  set date-string replace-all date-string ":" "-"
-  set date-string replace-all date-string "/" "-"
-  report date-string
-end
-
-;; Helper to replace all instances of a substring
-to-report replace-all [original-string search-string replace-string]
-  let result original-string
-
-  while [position search-string result != false] [
-    let pos position search-string result
-    let before-part substring result 0 pos
-    let after-part substring result (pos + length search-string) (length result)
-    set result (word before-part replace-string after-part)
-  ]
-
-  report result
-end
-
-;; Stop the current experiment
-to stop-experiment
-  set experiment-running? false
-  print "Experiment stopped manually."
-end
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -3594,7 +2434,7 @@ courier-population
 courier-population
 1
 100
-15.0
+3.0
 1
 1
 NIL
@@ -3631,9 +2471,9 @@ NIL
 HORIZONTAL
 
 PLOT
-1516
+1139
 10
-1890
+1513
 163
 on-the-fly jobs vs memory jobs
 NIL
@@ -3673,7 +2513,7 @@ restaurants-per-cluster
 restaurants-per-cluster
 1
 20
-10.0
+4.0
 1
 1
 NIL
@@ -3729,17 +2569,17 @@ memory-fade
 memory-fade
 0
 20
-5.0
+10.0
 0.5
 1
 %
 HORIZONTAL
 
 PLOT
-1545
-347
-1890
-527
+1146
+370
+1491
+550
 Open orders
 NIL
 NIL
@@ -3755,10 +2595,10 @@ PENS
 "pen-1" 1.0 0 -2674135 true "" "plot count jobs"
 
 PLOT
-1542
-169
-1890
-338
+1145
+183
+1493
+352
 Current courier activities
 NIL
 NIL
@@ -3787,10 +2627,10 @@ random-startingpoint-couriers
 -1000
 
 MONITOR
-781
-511
-889
-556
+1021
+11
+1129
+56
 random vs. memory
 on-the-fly-jobs / memory-jobs
 1
@@ -3828,10 +2668,10 @@ NIL
 HORIZONTAL
 
 SWITCH
-442
-549
-592
-582
+832
+518
+982
+551
 show-cluster-lines
 show-cluster-lines
 0
@@ -3889,10 +2729,10 @@ NIL
 HORIZONTAL
 
 SWITCH
-781
-169
-915
-202
+920
+172
+1054
+205
 debug-memory
 debug-memory
 1
@@ -3900,10 +2740,10 @@ debug-memory
 -1000
 
 SWITCH
-782
-217
-971
-250
+946
+227
+1135
+260
 debug-demand-prediction
 debug-demand-prediction
 1
@@ -3911,10 +2751,10 @@ debug-demand-prediction
 -1000
 
 SWITCH
-20
-556
-179
-589
+152
+606
+311
+639
 first-go-back-to-rest
 first-go-back-to-rest
 1
@@ -3922,10 +2762,10 @@ first-go-back-to-rest
 -1000
 
 SWITCH
-216
-562
-374
-595
+182
+664
+340
+697
 opportunistic-switch
 opportunistic-switch
 0
@@ -3941,17 +2781,17 @@ switch-threshold
 switch-threshold
 10
 100
-10.0
+30.0
 5
 1
 %
 HORIZONTAL
 
 SLIDER
-785
-122
-957
-155
+961
+137
+1133
+170
 debug-interval
 debug-interval
 0
@@ -3978,10 +2818,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-902
-517
-1082
-562
+883
+584
+1063
+629
 Prediction Weights
 all-prediction-weights
 2
@@ -3989,10 +2829,10 @@ all-prediction-weights
 11
 
 MONITOR
-916
-460
-997
-505
+1024
+529
+1105
+574
 Time of Day
 get-current-time-block
 2
@@ -4000,10 +2840,10 @@ get-current-time-block
 11
 
 MONITOR
-780
-456
-905
-501
+993
+442
+1118
+487
 Prediction Accuracy
 prediction-accuracy
 2
@@ -4011,10 +2851,10 @@ prediction-accuracy
 11
 
 PLOT
-29
-700
-229
-850
+1560
+10
+1760
+160
 Courier Rewards
 Time (ticks)
 Earnings
@@ -4029,10 +2869,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "ifelse ticks > earnings-update-interval [plot mean earnings-per-interval][plot 0]"
 
 PLOT
-1545
-537
-1890
-687
+1147
+559
+1492
+709
 Courier Cumulative Earnings
 Time (ticks)
 Total Earnings
@@ -4047,10 +2887,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "ifelse ticks >= 3600 [plot mean [total-reward / (ticks / 3600)] of couriers][plot 0]"
 
 PLOT
-399
-687
-599
-837
+1548
+401
+1748
+551
 Prediction Accuracy
 Ticks (time)
 Accuracy (%)
@@ -4063,225 +2903,6 @@ false
 "" ""
 PENS
 "default" 1.0 0 -16777216 true "" "if prediction-accuracy > 0 [plot prediction-accuracy]"
-
-SLIDER
-1135
-41
-1323
-74
-experiment-runs-per-config
-experiment-runs-per-config
-1
-50
-5.0
-1
-1
-NIL
-HORIZONTAL
-
-SLIDER
-1135
-76
-1373
-109
-experiment-ticks-per-run
-experiment-ticks-per-run
-3600
-432000
-86400.0
-3600
-1
-seconds
-HORIZONTAL
-
-SLIDER
-1135
-112
-1307
-145
-experiment-base-seed
-experiment-base-seed
-1
-999
-1.0
-1
-1
-NIL
-HORIZONTAL
-
-SWITCH
-1135
-183
-1276
-216
-vary-autonomy?
-vary-autonomy?
-1
-1
--1000
-
-SWITCH
-1135
-218
-1306
-251
-vary-cooperativeness?
-vary-cooperativeness?
-1
-1
--1000
-
-SWITCH
-1135
-253
-1266
-286
-vary-memory?
-vary-memory?
-1
-1
--1000
-
-SWITCH
-1135
-287
-1314
-320
-vary-prediction-weight?
-vary-prediction-weight?
-1
-1
--1000
-
-SWITCH
-1135
-322
-1314
-355
-include-custom-configs?
-include-custom-configs?
-0
-1
--1000
-
-BUTTON
-1135
-382
-1262
-415
-Setup Experiments
-setup-experiments
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-BUTTON
-1135
-418
-1253
-451
-Run Experiments
-run-experiment
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-BUTTON
-1135
-454
-1256
-487
-Stop Experiments
-stop-experiment
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-INPUTBOX
-1146
-513
-1399
-573
-analysis-file-path
-C:\\Users\\deazb\\Documents\\GitHub\\self-organizing-crowdsourced-food-delivery-system\\experiments
-1
-0
-String
-
-BUTTON
-1171
-602
-1281
-635
-Analyze Results
-analyze-experiment-results analysis-file-path
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-PLOT
-1004
-642
-1204
-792
-Autonomy Level Comparison
-Autonomy Level
-Value
-0.0
-3.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"Deliveries" 1.0 0 -16777216 true "" ""
-"Earnings" 1.0 0 -7500403 true "" ""
-"Utilization" 1.0 0 -2674135 true "" ""
-
-PLOT
-1211
-645
-1411
-795
-Performance Variability
-Autonomy Level
-Variability
-0.0
-3.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"Earnings Var" 1.0 0 -16777216 true "" ""
-"Time Var" 1.0 0 -7500403 true "" ""
-"Deliveries Var" 1.0 0 -2674135 true "" ""
 
 @#$#@#$#@
 ## WHAT IS IT?
