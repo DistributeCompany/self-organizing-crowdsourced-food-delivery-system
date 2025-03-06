@@ -85,6 +85,9 @@ couriers-own [
   heat-map              ;; Table storing location scores
   prediction-weight     ;; Balance between prediction vs. actual demand
   waiting-at-restaurant
+  job-restaurants     ;; List of restaurants served (instead of just patches)
+  job-destinations    ;; List of destinations served (customer locations)
+  job-details         ;; List of job details (restaurant, destination, reward, etc.)
 ]
 
 ;; Customer properties
@@ -161,6 +164,11 @@ globals [
 to setup
   clear-all
   reset-ticks
+
+    ;; Set default for job-sharing-algorithm if not already set
+  if job-sharing-algorithm = 0 or job-sharing-algorithm = "" [
+    set job-sharing-algorithm "Balanced Load"
+  ]
 
    ;; Initialize time blocks for temporal patterns (24-hour clock divided into 4-hour blocks)
   set time-blocks ["0-4" "4-8" "8-12" "12-16" "16-20" "20-24"]
@@ -280,7 +288,13 @@ to setup-couriers
       set current-job nobody
       set going-to-rest nobody
       set next-location nobody
+
+      ;; Initialize tracking lists
       set jobs-performed []
+      set job-restaurants []  ;; List of restaurants served
+      set job-destinations [] ;; List of customer locations served
+      set job-details []      ;; List of job detail tables
+
       set has-done-job? false
       ifelse autonomy-level = 0 [
         set last-restaurant-id [restaurant-id] of temp-restaurant
@@ -446,7 +460,7 @@ to go
       apply-memory-fade
     ]
     ;; Handle cooperative behavior
-    if cooperativeness-level > 1 [
+    if cooperativeness-level > 0 [
       share-information
     ]
 
@@ -466,10 +480,10 @@ to go
     ;; Execute behavior based on current status
     if status = "searching-for-next-job" [
       wiggle
-      check-neighbourhood
+      check-neighbourhood-updated
     ]
     if status = "waiting-for-next-job" [
-      check-neighbourhood
+      check-neighbourhood-updated
     ]
 
     ;; Apply route evaluation based on learning model
@@ -980,10 +994,6 @@ end
 ;; Re-evaluate route based on learning (Learning and Adaptation)
 to re-evaluate-route-based-on-learning
   ;; This is a placeholder for Autonomy lvl. 3 implementation
-end
-
-;; Share information with nearby couriers (placeholder)
-to share-information
 end
 
 ;; Re-evaluate current route (placeholder)
@@ -1829,15 +1839,24 @@ end
 to at-destination
   receive-reward
   record-delivery [tick-number] of current-job
+
   ;; Store job information before removing it
   let temp-job-number [job-number] of current-job
   let job-restaurant-id [restaurant-id] of current-job
+  let job-restaurant-instance [restaurant-instance] of current-job
+  let job-reward [reward] of current-job
 
   ;; Always update the last restaurant ID
   set last-restaurant-id job-restaurant-id
   set has-done-job? true
 
-  set going-to-rest [restaurant-instance] of current-job
+  ;; Store job information as a list containing origin restaurant ID,
+  ;; destination patch, and reward - we use restaurant ID since
+  ;; restaurant-instance is a turtle and may be gone later
+  set jobs-performed lput (list job-restaurant-id patch-here job-reward) jobs-performed
+
+  set going-to-rest job-restaurant-instance
+
   ;; Remove the job instance
   ask current-job [
     die  ;; Remove completed job
@@ -1870,9 +1889,6 @@ to at-destination
       set waiting-at-restaurant nobody
     ]
   ]
-
-  ;; Record completed delivery
-  set jobs-performed (insert-item (length jobs-performed) jobs-performed patch-here)
 end
 
 to move-towards-specific-restaurant [rest-id]
@@ -2771,6 +2787,405 @@ to setup-comparative-plots
   ]
 end
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;          COOPERATIVENESS PROCEDURES           ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This will be called from check-neighbourhood when cooperativeness-level = 1
+to check-neighbourhood-with-sharing
+  ;; Only apply sharing for autonomy levels 1 and 2
+  if autonomy-level <= 0 or autonomy-level > 2 [
+    check-neighbourhood  ;; Fall back to standard behavior
+    stop
+  ]
+
+  ;; Find all available jobs in neighborhood
+  let nearby-jobs jobs with [
+    available? and
+    distance myself < neighbourhood-size
+  ]
+
+  if any? nearby-jobs [
+    ;; Select a job to potentially take
+    let temp-job one-of nearby-jobs
+
+    ;; Find all waiting couriers in the neighborhood of this job
+    let eligible-couriers couriers with [
+      (status = "waiting-for-next-job"or status = "searching-for-next-job") and
+      distance temp-job < neighbourhood-size
+    ]
+
+    ;; Debug output when debug-coop is on
+    if debug-coop [
+      print "=============== COOPERATIVE SHARING DEBUG ==============="
+      print (word "Courier: " who)
+      print (word "Current tick: " ticks)
+      print (word "Job: #" [who] of temp-job ", Reward: " precision [reward] of temp-job 2)
+      print (word "Restaurant ID: " [restaurant-id] of temp-job)
+      print (word "Eligible couriers: " count eligible-couriers)
+
+      ;; List all eligible couriers with their stats
+      print "Courier details:"
+      ask eligible-couriers [
+        print (word "  Courier #" who
+               ", Jobs: " length jobs-performed
+               ", Total reward: " precision total-reward 2)
+      ]
+
+      print (word "Selected algorithm: " job-sharing-algorithm)
+    ]
+
+    ;; Apply sharing algorithm based on user choice
+    ifelse job-sharing-algorithm = "Balanced Load" [
+      balanced-load-sharing eligible-couriers temp-job
+    ][
+      if job-sharing-algorithm = "Proportional Fairness" [
+        proportional-fairness-sharing eligible-couriers temp-job
+      ]
+    ]
+  ]
+end
+
+;; Algorithm 1: Balanced Load Sharing
+;; Couriers with fewer completed jobs get priority
+;; In case of a tie, the first courier gets the job
+to balanced-load-sharing [eligible-couriers temp-job]
+  if any? eligible-couriers [
+    ;; Get the minimum number of jobs among all eligible couriers
+    let min-jobs-count min [length jobs-performed] of eligible-couriers
+
+    ;; Check if all couriers have the same number of jobs (a tie)
+    let all-same-jobs? true
+    let job-counts []
+
+    ask eligible-couriers [
+      set job-counts lput (length jobs-performed) job-counts
+      if length jobs-performed != min-jobs-count [
+        set all-same-jobs? false
+      ]
+    ]
+
+    ;; Find courier with fewest completed jobs (we want to give them priority)
+    ;; In case of a tie, select the courier with the lowest who number (first courier)
+    let min-jobs-courier nobody
+
+    ifelse all-same-jobs? [
+      ;; All couriers have the same number of jobs - select the one with lowest who number
+      set min-jobs-courier min-one-of eligible-couriers [who]
+
+      if debug-coop [
+        print "  TIE DETECTED: All couriers have the same number of jobs"
+        print (word "  Selecting courier with lowest ID: #" [who] of min-jobs-courier)
+      ]
+    ][
+      ;; Normal case - select courier with fewest jobs
+      set min-jobs-courier min-one-of eligible-couriers [length jobs-performed]
+    ]
+
+    ;; Debug output
+    if debug-coop [
+      print (word "BALANCED LOAD ALGORITHM:")
+      print (word "  Courier with fewest jobs: #" [who] of min-jobs-courier
+             " (" [length jobs-performed] of min-jobs-courier " jobs)")
+      print (word "  Current courier: #" who " (" length jobs-performed " jobs)")
+      print (word "  Decision: " ifelse-value (min-jobs-courier = self) ["Taking job"] ["Deferring to courier with fewer jobs"])
+    ]
+
+    ;; If I am the selected courier, take the job
+    ifelse min-jobs-courier = self [
+      ;; Take the job
+      set current-job temp-job
+      ask current-job [
+        set available? false
+      ]
+
+      ;; Update status and statistics
+      set next-location [origin] of current-job
+      face next-location
+
+      ;; Update job statistics
+      if status = "waiting-for-next-job" [
+        set memory-jobs memory-jobs + 1
+      ]
+
+      ;; Set movement target
+      ifelse (distance next-location < 0.5) [
+        ;; Already at restaurant - go directly to on-job
+        set status "on-job"
+        set color red
+        set to-origin? false
+        set to-destination? true
+        set next-location [destination] of current-job
+        face next-location
+        set going-to-rest nobody
+
+        if debug-coop [
+          print "  Already at restaurant, moving directly to customer"
+        ]
+      ][
+        ;; Need to go to restaurant first
+        set status "moving-towards-restaurant"
+        set color grey
+        set to-origin? true
+        set to-destination? false
+
+        if debug-coop [
+          print "  Moving to restaurant for pickup"
+        ]
+      ]
+    ][
+      ;; If I'm not the selected courier, I defer to them
+      ;; Do nothing - the selected courier will take it
+    ]
+  ]
+end
+
+
+;; Algorithm 2: Proportional Fairness Sharing
+;; Probability of accepting a job is inversely proportional to total reward
+to proportional-fairness-sharing [eligible-couriers temp-job]
+  if any? eligible-couriers [
+    ;; Get job reward
+    let job-reward [reward] of temp-job
+
+    ;; Calculate all eligible couriers' total rewards
+    let all-rewards []
+    let courier-ids []
+
+    ask eligible-couriers [
+      set all-rewards lput total-reward all-rewards
+      set courier-ids lput who courier-ids
+    ]
+
+    ;; To avoid division by zero for couriers with no rewards yet
+    let min-reward 0.1
+    let adjusted-rewards map [r -> max list r min-reward] all-rewards
+
+    ;; Calculate inverse proportional weights
+    ;; Smaller total_reward = higher chance to get job
+    let sum-inverse-rewards sum (map [r -> 1 / r] adjusted-rewards)
+    let weights []
+    let my-weight 0
+    let my-index 0
+    let current-index 0
+
+    ;; Find my index in the courier list
+    set my-index position who courier-ids
+    if my-index = false [
+      set my-index -1  ;; Not found in the list
+    ]
+
+    ;; Calculate weights for all couriers
+    let i 0
+    while [i < length adjusted-rewards] [
+      let courier-reward item i adjusted-rewards
+      let courier-weight (1 / courier-reward) / sum-inverse-rewards
+      set weights lput courier-weight weights
+
+      if i = my-index [
+        set my-weight courier-weight
+      ]
+
+      set i i + 1
+    ]
+
+    ;; Debug output for weights
+    if debug-coop [
+      print "PROPORTIONAL FAIRNESS ALGORITHM:"
+      print "  Courier weights (lower rewards = higher chance):"
+
+      let index 0
+      while [index < length weights] [
+        let courier-id item index courier-ids
+        let weight item index weights
+        let actual-reward item index all-rewards
+        print (word "    Courier #" courier-id ": Weight "
+               precision (weight * 100) 2 "%, Reward "
+               precision actual-reward 2)
+        set index index + 1
+      ]
+    ]
+
+    ;; Use stochastic assignment based on weights
+    let random-value random-float 1.0
+    let cumulative-weight 0
+    let selected-index -1
+    let j 0
+
+    while [j < length weights and selected-index = -1] [
+      set cumulative-weight cumulative-weight + item j weights
+      if random-value <= cumulative-weight [
+        set selected-index j
+      ]
+      set j j + 1
+    ]
+
+    ;; Debug the selection process
+    if debug-coop [
+      print (word "  Random value: " precision random-value 4)
+      print (word "  Selected index: " selected-index)
+      print (word "  My index: " my-index)
+      print (word "  Decision: " ifelse-value (selected-index = my-index) ["Taking job"] ["Job assigned to another courier"])
+    ]
+
+    ;; If I am the selected courier, take the job
+    if selected-index = my-index [
+      ;; Take the job
+      set current-job temp-job
+      ask current-job [
+        set available? false
+      ]
+
+      ;; Update status and statistics
+      set next-location [origin] of current-job
+      face next-location
+
+      ;; Update job statistics
+      if status = "waiting-for-next-job" [
+        set memory-jobs memory-jobs + 1
+      ]
+
+      ;; Set movement target
+      ifelse (distance next-location < 0.5) [
+        ;; Already at restaurant - go directly to on-job
+        set status "on-job"
+        set color red
+        set to-origin? false
+        set to-destination? true
+        set next-location [destination] of current-job
+        face next-location
+        set going-to-rest nobody
+
+        if debug-coop [
+          print "  Already at restaurant, moving directly to customer"
+        ]
+      ][
+        ;; Need to go to restaurant first
+        set status "moving-towards-restaurant"
+        set color grey
+        set to-origin? true
+        set to-destination? false
+
+        if debug-coop [
+          print "  Moving to restaurant for pickup"
+        ]
+      ]
+    ]
+  ]
+end
+
+;; Share local job information with nearby couriers
+;; Called from share-information procedure when cooperativeness-level = 1
+to share-local-job-info
+  ;; Only applicable for cooperativeness-level 1
+  if cooperativeness-level != 1 [
+    stop
+  ]
+
+  ;; Find all jobs in neighborhood
+  let nearby-jobs jobs with [
+    available? and
+    distance myself < neighbourhood-size
+  ]
+
+  ;; Find all nearby couriers to share with
+  let nearby-couriers other couriers with [
+    distance myself < neighbourhood-size
+  ]
+
+  ;; For cooperativeness-level 1, just make sure other couriers
+  ;; are aware of these jobs (no action needed in this model since
+  ;; all agents can already see all jobs in their neighborhood)
+end
+
+;; Modified check-neighbourhood to handle cooperative behavior
+to check-neighbourhood-updated
+  ;; For autonomy level 0, use the restricted version
+  if autonomy-level = 0 [
+    check-neighbourhood-level-zero
+    stop
+  ]
+
+  ;; Apply cooperative behavior for level 1
+  if cooperativeness-level = 1 and (autonomy-level = 1 or autonomy-level = 2) [
+    check-neighbourhood-with-sharing
+    stop
+  ]
+
+  ;; Original check-neighbourhood logic for other cases
+  if autonomy-level > 0 and count jobs in-radius neighbourhood-size > 0 [
+    let test count jobs
+    let temp-job one-of jobs in-radius neighbourhood-size
+
+    ;; Try to take available job
+    if [available?] of temp-job [
+      set current-job temp-job
+      ask current-job [
+        set available? false
+      ]
+
+      ;; If this is the courier's first job, record the restaurant
+      if not has-done-job? [
+        set has-done-job? true
+        set last-restaurant-id [restaurant-id] of current-job
+      ]
+
+      ;; Set movement target
+      set next-location [origin] of current-job
+      face next-location
+
+      ;; Update job statistics
+      if status = "waiting-for-next-job" [
+        set memory-jobs memory-jobs + 1
+      ]
+      if color = green [
+        set on-the-fly-jobs on-the-fly-jobs + 1
+      ]
+
+      ;; Update status based on location
+      ifelse (distance next-location < 0.5) [  ;; Using a small threshold
+        ;; Already at restaurant - go directly to on-job
+        set status "on-job"
+        set color red
+        set to-origin? false
+        set to-destination? true
+        set next-location [destination] of current-job
+        face next-location
+        set going-to-rest nobody
+
+        ;; Check if this was the last job at the restaurant
+        let rest-id [restaurant-id] of current-job
+        let remaining-jobs count jobs with [available? and restaurant-id = rest-id]
+
+        if remaining-jobs = 0 [
+          ;; Update restaurant color if this was the last available job
+          ask restaurants with [restaurant-id = rest-id] [
+            set color white
+          ]
+        ]
+      ][
+        ;; Need to go to restaurant first
+        set status "moving-towards-restaurant"
+        set color grey
+        set to-origin? true
+        set to-destination? false
+      ]
+    ]
+  ]
+end
+
+;; Updated share-information procedure to include level 1 behavior
+to share-information
+  ;; Depending on cooperativeness level, apply different sharing strategies
+  if cooperativeness-level = 1 [
+    share-local-job-info
+  ]
+
+  ;; For level 2 and 3, we'll keep the existing code or placeholder
+  ;; This would be implemented in the original model
+end
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;              EXPERIMENT PROCEDURES            ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2884,7 +3299,15 @@ to build-configuration-list
   if include-custom-configs? [
     ;; Example: Add a custom configuration with multiple parameters
     set experiment-configs lput (list
-      (list "autonomy-level" 3)
+      (list "autonomy-level" 1)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 1)
+      (list "cooperativeness-level" 1)
       (list "use-memory" true)
       (list "memory-fade" 5)
     ) experiment-configs
@@ -3398,6 +3821,9 @@ to export-results
 
     print (word "Results successfully exported to: " data-export-path)
     print "File can be imported into Excel or other analysis software."
+
+    ;;verify-job-distribution
+
   ][
     print (word "Error writing to file: " error-message)
   ]
@@ -3523,6 +3949,455 @@ to stop-experiment
   set experiment-running? false
   print "Experiment stopped manually."
 end
+
+;; Add a reporter to find the cluster number for a location
+to-report get-cluster-for-location [loc]
+  let nearby-restaurant min-one-of restaurants [distance loc]
+  if nearby-restaurant != nobody [
+    report [cluster-number] of nearby-restaurant
+  ]
+  report -1  ;; Return -1 if no restaurant found
+end
+
+;; Procedure to track jobs per courier per cluster
+to-report track-jobs-per-cluster [courier-agent]
+  ;; Initialize a table to store jobs by cluster
+  let cluster-jobs table:make
+
+  ;; Initialize all clusters with zero jobs
+  let cluster-count restaurant-clusters
+  let i 0
+  while [i < cluster-count] [
+    table:put cluster-jobs i 0
+    set i i + 1
+  ]
+
+  ;; Count jobs by cluster using the restaurant ID in jobs-performed
+  foreach [jobs-performed] of courier-agent [ job-info ->
+    let restaurant-id-val item 0 job-info
+
+    ;; Find the restaurant by ID to get its cluster
+    let restaurant-agent one-of restaurants with [restaurant-id = restaurant-id-val]
+
+    if restaurant-agent != nobody [
+      let cluster-num [cluster-number] of restaurant-agent
+
+      let current-count 0
+      if table:has-key? cluster-jobs cluster-num [
+        set current-count table:get cluster-jobs cluster-num
+      ]
+      table:put cluster-jobs cluster-num (current-count + 1)
+    ]
+  ]
+
+  report cluster-jobs
+end
+
+to-report track-jobs-per-restaurant [courier-agent]
+  ;; Initialize a table to store jobs by restaurant ID
+  let restaurant-jobs table:make
+
+  ;; Count jobs by restaurant ID directly from jobs-performed
+  foreach [jobs-performed] of courier-agent [ job-info ->
+    let rest-id item 0 job-info
+
+    let current-count 0
+    if table:has-key? restaurant-jobs rest-id [
+      set current-count table:get restaurant-jobs rest-id
+    ]
+    table:put restaurant-jobs rest-id (current-count + 1)
+  ]
+
+  report restaurant-jobs
+end
+
+;; Add a reporter to track earnings per cluster
+to-report track-earnings-per-cluster [courier-agent]
+  ;; Initialize a table to store earnings by cluster
+  let cluster-earnings table:make
+
+  ;; Initialize all clusters with zero earnings
+  let cluster-count restaurant-clusters
+  let i 0
+  while [i < cluster-count] [
+    table:put cluster-earnings i 0
+    set i i + 1
+  ]
+
+  ;; Add up earnings by cluster
+  foreach [jobs-performed] of courier-agent [ job-info ->
+    let rest-id item 0 job-info
+    let job-reward item 2 job-info
+
+    ;; Find the restaurant by ID to get its cluster
+    let restaurant-agent one-of restaurants with [restaurant-id = rest-id]
+
+    if restaurant-agent != nobody [
+      let cluster-num [cluster-number] of restaurant-agent
+
+      let current-earnings 0
+      if table:has-key? cluster-earnings cluster-num [
+        set current-earnings table:get cluster-earnings cluster-num
+      ]
+      table:put cluster-earnings cluster-num (current-earnings + job-reward)
+    ]
+  ]
+
+  report cluster-earnings
+end
+
+;; Add a reporter to track earnings per restaurant
+to-report track-earnings-per-restaurant [courier-agent]
+  ;; Initialize a table to store earnings by restaurant ID
+  let restaurant-earnings table:make
+
+  ;; Add up earnings by restaurant
+  foreach [job-details] of courier-agent [ job-detail ->
+    let restaurant-instance-val table:get job-detail "restaurant"
+    let job-reward table:get job-detail "reward"
+
+    if restaurant-instance != nobody [
+      let rest-id [restaurant-id] of restaurant-instance-val
+
+      let current-earnings 0
+      if table:has-key? restaurant-earnings rest-id [
+        set current-earnings table:get restaurant-earnings rest-id
+      ]
+      table:put restaurant-earnings rest-id (current-earnings + job-reward)
+    ]
+  ]
+
+  report restaurant-earnings
+end
+
+;; Add this procedure to verify job distribution after the data is exported to CSV
+to verify-job-distribution
+  ;; Calculate and display job distribution statistics
+  print "\n========== JOB DISTRIBUTION VERIFICATION ==========\n"
+
+  ;; === BASIC STATISTICS ===
+  ;; Total jobs and earnings (same as before)
+  let total-jobs sum [length jobs-performed] of couriers
+  print (word "Total jobs completed: " total-jobs)
+
+  let total-earnings sum [total-reward] of couriers
+  print (word "Total earnings: " precision total-earnings 2)
+
+  ;; === RESTAURANT-BASED ANALYSIS ===
+  print "\n=== RESTAURANT-BASED JOB DISTRIBUTION ===\n"
+
+  ;; Create a global table of all restaurant jobs
+  let global-restaurant-jobs table:make
+  let total-restaurants restaurant-clusters * restaurants-per-cluster
+
+  ;; Initialize all restaurants with zero jobs
+  let i 1
+  while [i <= total-restaurants] [
+    table:put global-restaurant-jobs i 0
+    set i i + 1
+  ]
+
+  ;; Count total jobs per restaurant across all couriers
+  ask couriers [
+    let courier-restaurant-jobs track-jobs-per-restaurant self
+
+    ;; Add this courier's jobs to the global count
+    foreach table:keys courier-restaurant-jobs [ rest-id ->
+      let job-count table:get courier-restaurant-jobs rest-id
+      let current-count 0
+
+      if table:has-key? global-restaurant-jobs rest-id [
+        set current-count table:get global-restaurant-jobs rest-id
+      ]
+
+      table:put global-restaurant-jobs rest-id (current-count + job-count)
+    ]
+  ]
+
+  ;; Display jobs by restaurant
+  print "Restaurant ID | Jobs Completed | Restaurant Cluster"
+  print "-------------|----------------|------------------"
+
+  foreach sort table:keys global-restaurant-jobs [ rest-id ->
+    let job-count table:get global-restaurant-jobs rest-id
+
+    ;; Find the restaurant's cluster
+    let cluster-num "Unknown"
+    let restaurant-agent one-of restaurants with [restaurant-id = rest-id]
+    if restaurant-agent != nobody [
+      set cluster-num [cluster-number] of restaurant-agent
+    ]
+
+    if job-count > 0 [
+      print (word "      " rest-id "      |       " job-count "        |        " cluster-num)
+    ]
+  ]
+
+  ;; === CLUSTER-BASED ANALYSIS ===
+  print "\n=== CLUSTER-BASED JOB DISTRIBUTION ===\n"
+
+  ;; Create a global table of all cluster jobs
+  let global-cluster-jobs table:make
+  let cluster-count restaurant-clusters
+
+  ;; Initialize all clusters with zero jobs
+  let j 0
+  while [j < cluster-count] [
+    table:put global-cluster-jobs j 0
+    set j j + 1
+  ]
+
+  ;; Count total jobs per cluster across all couriers
+  ask couriers [
+    let courier-cluster-jobs track-jobs-per-cluster self
+
+    ;; Add this courier's jobs to the global count
+    foreach table:keys courier-cluster-jobs [ cluster-num ->
+      let job-count table:get courier-cluster-jobs cluster-num
+      let current-count 0
+
+      if table:has-key? global-cluster-jobs cluster-num [
+        set current-count table:get global-cluster-jobs cluster-num
+      ]
+
+      table:put global-cluster-jobs cluster-num (current-count + job-count)
+    ]
+  ]
+
+  ;; Display jobs by cluster
+  print "Cluster ID | Jobs Completed | % of Total Jobs"
+  print "-----------|----------------|----------------"
+
+  foreach sort table:keys global-cluster-jobs [ cluster-num ->
+    let job-count table:get global-cluster-jobs cluster-num
+    let percentage 0
+    if total-jobs > 0 [
+      set percentage (job-count / total-jobs) * 100
+    ]
+
+    print (word "     " cluster-num "     |       " job-count "        |     " precision percentage 2 "%")
+  ]
+
+  ;; === COURIER JOB DISTRIBUTION BY CLUSTER ===
+  print "\n=== COURIER JOB DISTRIBUTION BY CLUSTER ===\n"
+
+  ;; Create header row for the table
+  let header-str "Courier ID | "
+  let k 0
+  while [k < cluster-count] [
+    set header-str (word header-str "Cluster " k "   ")
+    set k k + 1
+  ]
+  print header-str
+
+  ;; Create separator row
+  let separator-str "----------|"
+  set k 0
+  while [k < cluster-count] [
+    set separator-str (word separator-str "-----------")
+    set k k + 1
+  ]
+  print separator-str
+
+  ;; Show each courier's job distribution by cluster
+  ask couriers [
+    let courier-cluster-jobs track-jobs-per-cluster self
+    let courier-row (word "    " who "     |")
+
+    let m 0
+    while [m < cluster-count] [
+      let job-count 0
+      if table:has-key? courier-cluster-jobs m [
+        set job-count table:get courier-cluster-jobs m
+      ]
+
+      set courier-row (word courier-row "     " job-count "     ")
+      set m m + 1
+    ]
+
+    print courier-row
+  ]
+
+  ;; === COURIER EARNINGS DISTRIBUTION BY CLUSTER ===
+  if any? couriers with [not empty? jobs-performed] [
+    print "\n=== COURIER EARNINGS DISTRIBUTION BY CLUSTER ===\n"
+
+    ;; Create header row for the table
+    let earnings-header-str "Courier ID | "
+    let n 0
+    while [n < cluster-count] [
+      set earnings-header-str (word earnings-header-str "Cluster " n "   ")
+      set n n + 1
+    ]
+    print earnings-header-str
+
+    ;; Create separator row
+    let earnings-separator-str "----------|"
+    set n 0
+    while [n < cluster-count] [
+      set earnings-separator-str (word earnings-separator-str "-----------")
+      set n n + 1
+    ]
+    print earnings-separator-str
+
+    ;; Show each courier's earnings distribution by cluster
+    ask couriers [
+      let courier-cluster-earnings track-earnings-per-cluster self
+      let courier-row (word "    " who "     |")
+
+      let p 0
+      while [p < cluster-count] [
+        let earnings 0
+        if table:has-key? courier-cluster-earnings p [
+          set earnings table:get courier-cluster-earnings p
+        ]
+
+        set courier-row (word courier-row "   " precision earnings 1 "   ")
+        set p p + 1
+      ]
+
+      print courier-row
+    ]
+  ]
+
+  ;; === ALGORITHM EFFECTIVENESS ANALYSIS ===
+  if cooperativeness-level = 1 [
+    print "\n=== ALGORITHM EFFECTIVENESS ANALYSIS ===\n"
+    print (word "Job sharing algorithm used: " job-sharing-algorithm)
+
+    ;; Calculate cluster-specific statistics
+    foreach sort table:keys global-cluster-jobs [ cluster-num ->
+      let cluster-job-counts []
+      let cluster-courier-ids []
+
+      ask couriers [
+        let courier-cluster-jobs track-jobs-per-cluster self
+        if table:has-key? courier-cluster-jobs cluster-num [
+          let job-count table:get courier-cluster-jobs cluster-num
+          if job-count > 0 [
+            set cluster-job-counts lput job-count cluster-job-counts
+            set cluster-courier-ids lput who cluster-courier-ids
+          ]
+        ]
+      ]
+
+      ;; Only analyze if we have enough data
+      ifelse length cluster-job-counts >= 2 [
+        print (word "\nCluster " cluster-num " Analysis:")
+
+        ;; Calculate basic statistics
+        let avg-jobs mean cluster-job-counts
+        let std-dev-jobs standard-deviation cluster-job-counts
+        let cv-jobs 0
+        if avg-jobs > 0 [
+          set cv-jobs std-dev-jobs / avg-jobs
+        ]
+
+        print (word "  Average jobs per courier: " precision avg-jobs 2)
+        print (word "  Standard deviation: " precision std-dev-jobs 2)
+        print (word "  Coefficient of variation: " precision cv-jobs 3 " (lower is more even)")
+
+        ;; Algorithm-specific analysis
+        ifelse job-sharing-algorithm = "Balanced Load" and length cluster-job-counts >= 3 [
+          let correlation calculate-correlation cluster-courier-ids cluster-job-counts
+
+          print (word "  Balanced Load effectiveness - Correlation: " precision correlation 3)
+          ifelse correlation < 0.3 [
+            print "    Low correlation suggests effective load balancing"
+          ][
+            ifelse correlation < 0.7 [
+            print "    Moderate correlation suggests partial load balancing"
+          ][
+            print "    High correlation suggests minimal load balancing"
+          ]
+        ]
+        ]
+        [
+          if job-sharing-algorithm = "Proportional Fairness" and any? couriers with [not empty? jobs-performed] [
+            ;; For proportional fairness, we need to check if earnings distribution is more even than job distribution
+            let cluster-earnings []
+
+            ask couriers [
+              let courier-cluster-earnings track-earnings-per-cluster self
+              if table:has-key? courier-cluster-earnings cluster-num [
+                let earnings table:get courier-cluster-earnings cluster-num
+                if earnings > 0 [
+                  set cluster-earnings lput earnings cluster-earnings
+                ]
+              ]
+            ]
+
+            if length cluster-earnings >= 2 [
+              let avg-earnings mean cluster-earnings
+              let std-dev-earnings standard-deviation cluster-earnings
+              let cv-earnings 0
+              if avg-earnings > 0 [
+                set cv-earnings std-dev-earnings / avg-earnings
+              ]
+
+              print (word "  Proportional Fairness effectiveness:")
+              print (word "    Job distribution CV: " precision cv-jobs 3)
+              print (word "    Earnings distribution CV: " precision cv-earnings 3)
+
+              ifelse cv-earnings < cv-jobs [
+                print "    Earnings are more evenly distributed than jobs, suggesting the algorithm worked as intended"
+              ]
+              [
+                print "    Earnings distribution is not more even than job distribution, suggesting the algorithm may not have been fully effective"
+              ]
+            ]
+          ]
+        ]
+        ]
+        [
+          print (word "\nCluster " cluster-num ": Not enough couriers with jobs for statistical analysis")
+        ]
+
+  ]
+  ]
+
+  print "\n========== END VERIFICATION ==========\n"
+end
+
+;; Helper function to calculate correlation between two lists
+to-report calculate-correlation [list1 list2]
+  let n length list1
+
+  ;; Ensure lists are the same length
+  if n != length list2 [
+    report 0  ;; Return 0 if lists are different lengths
+  ]
+
+  ;; Calculate means
+  let mean1 mean list1
+  let mean2 mean list2
+
+  ;; Calculate sum of products of deviations
+  let sum-of-products 0
+  let sum-of-squares1 0
+  let sum-of-squares2 0
+
+  let i 0
+  while [i < n] [
+    let dev1 (item i list1) - mean1
+    let dev2 (item i list2) - mean2
+
+    set sum-of-products sum-of-products + (dev1 * dev2)
+    set sum-of-squares1 sum-of-squares1 + (dev1 * dev1)
+    set sum-of-squares2 sum-of-squares2 + (dev2 * dev2)
+
+    set i i + 1
+  ]
+
+  ;; Calculate correlation coefficient
+  ifelse sum-of-squares1 > 0 and sum-of-squares2 > 0 [
+    report sum-of-products / (sqrt sum-of-squares1 * sqrt sum-of-squares2)
+  ][
+    report 0  ;; Handle case where variance is zero
+  ]
+end
+
+
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -3570,9 +4445,9 @@ NIL
 
 BUTTON
 113
-11
+10
 176
-44
+43
 NIL
 Go
 T
@@ -3594,7 +4469,7 @@ courier-population
 courier-population
 1
 100
-15.0
+6.0
 1
 1
 NIL
@@ -3658,7 +4533,7 @@ restaurant-clusters
 restaurant-clusters
 1
 10
-3.0
+2.0
 1
 1
 NIL
@@ -3673,7 +4548,7 @@ restaurants-per-cluster
 restaurants-per-cluster
 1
 20
-10.0
+3.0
 1
 1
 NIL
@@ -3688,7 +4563,7 @@ cluster-area-size
 cluster-area-size
 1
 20
-10.0
+8.0
 1
 1
 NIL
@@ -3806,7 +4681,7 @@ autonomy-level
 autonomy-level
 0
 3
-3.0
+1.0
 1
 1
 NIL
@@ -3821,7 +4696,7 @@ cooperativeness-level
 cooperativeness-level
 0
 3
-0.0
+1.0
 1
 1
 NIL
@@ -3857,7 +4732,7 @@ free-moving-threshold
 free-moving-threshold
 0
 50
-15.0
+5.0
 1
 1
 NIL
@@ -4073,7 +4948,7 @@ experiment-runs-per-config
 experiment-runs-per-config
 1
 50
-5.0
+15.0
 1
 1
 NIL
@@ -4282,6 +5157,27 @@ PENS
 "Earnings Var" 1.0 0 -16777216 true "" ""
 "Time Var" 1.0 0 -7500403 true "" ""
 "Deliveries Var" 1.0 0 -2674135 true "" ""
+
+CHOOSER
+60
+649
+309
+694
+job-sharing-algorithm
+job-sharing-algorithm
+"Balanced Load" "Proportional Fairness"
+0
+
+SWITCH
+965
+175
+1081
+208
+debug-coop
+debug-coop
+1
+1
+-1000
 
 @#$#@#$#@
 ## WHAT IS IT?
