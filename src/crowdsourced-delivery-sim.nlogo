@@ -88,6 +88,9 @@ couriers-own [
   job-restaurants     ;; List of restaurants served (instead of just patches)
   job-destinations    ;; List of destinations served (customer locations)
   job-details         ;; List of job details (restaurant, destination, reward, etc.)
+  restaurant-occupancy      ;; Table storing known courier counts at restaurants
+  occupancy-timestamps      ;; Table storing when occupancy information was last updated
+  restaurant-shared-record  ;; Table to track which restaurants this courier has shared information about
 ]
 
 ;; Customer properties
@@ -256,7 +259,7 @@ to setup-couriers
   let i 1
 
   ;; Create each courier
-  loop [
+  while [i <= courier-population] [
     let courier-xcor 0
     let courier-ycor 0
     let cur-status ""
@@ -329,7 +332,7 @@ to setup-couriers
     ;; Stop when we've created all couriers
     if i = courier-population [
       show "Couriers setup completed"
-      stop
+     ; stop
     ]
     set i i + 1
   ]
@@ -340,6 +343,7 @@ to setup-couriers
     ;; Initialize demand prediction tables for each restaurant
     let total-restaurants restaurant-clusters * restaurants-per-cluster
     let rest-id 1
+
     while [rest-id <= total-restaurants] [
       ;; Create a new time pattern table for this restaurant
       let time-pattern-table table:make
@@ -362,9 +366,14 @@ to setup-couriers
         table:put heat-map location-key 0
       ]
 
+      set restaurant-occupancy table:make  ;; Table to store occupancy information
+      set occupancy-timestamps table:make  ;; Table to track information freshness
+      set restaurant-shared-record table:make  ;; Table to track which restaurants have been shared
+
       set rest-id rest-id + 1
     ]
   ]
+  debug-courier-knowledge
 end
 
 ;; Initialize reward tracking tables for a courier
@@ -554,7 +563,9 @@ to go
 
   ;; Update earnings data
   update-earnings-data
-
+  if debug-coop and ticks mod debug-interval = 0 [
+    debug-courier-knowledge
+  ]
   tick
 end
 
@@ -679,7 +690,7 @@ to predict-demand [current-time-block]
   update-heat-map
 end
 
-;; Update heat map scores based on demand predictions
+
 to update-heat-map
   ;; First, apply decay to existing heat map scores
   ;; This ensures values decrease over time if not refreshed
@@ -714,22 +725,73 @@ to update-heat-map
       ;; Get distance factor - closer is better
       let distance-factor max list 0 (20 - distance restaurant-agent)
 
-      ;; Get waiting couriers at this restaurant - fewer is better
-      let waiting-count count couriers with [
-        status = "waiting-for-next-job" and
-        distance restaurant-agent < 2
+      ;; Initialize competition factor and use-competition-factor flag
+      let competition-factor 0
+      let use-competition-factor? false
+
+      ;; Get waiting couriers at this restaurant only if:
+      ;; 1. We're physically close enough to directly observe (within radius neighbourhood-size)
+      ;; 2. OR we have fresh shared information through cooperativeness level 2
+      ifelse distance restaurant-agent <= neighbourhood-size [
+        ;; Direct observation - we can see the restaurant from our current position
+        let waiting-count count couriers with [
+          status = "waiting-for-next-job" and
+          distance restaurant-agent < neighbourhood-size
+        ]
+
+        ;; Calculate competition factor based on direct observation
+        set competition-factor max list 0 (5 - waiting-count)
+        set use-competition-factor? true
+
+        if debug-memory and (ticks mod debug-interval = 0) [
+          print (word "     Direct observation - waiting couriers: " waiting-count)
+        ]
+      ][
+        ;; Not close enough for direct observation, check if we have shared information
+        if cooperativeness-level >= 2 and table:has-key? restaurant-occupancy i and table:has-key? occupancy-timestamps i [
+          ;; We have shared information, check if it's fresh
+          let info-age ticks - table:get occupancy-timestamps i
+
+          if info-age <= 300 [  ;; 300 ticks = 5 minutes (fresh information)
+            let waiting-count table:get restaurant-occupancy i
+            set competition-factor max list 0 (5 - waiting-count)
+            set use-competition-factor? true
+
+            if debug-memory and (ticks mod debug-interval = 0) [
+              print (word "     Using shared information - waiting couriers: " waiting-count " (data age: " info-age " ticks)")
+            ]
+          ]
+
+          ;; No need for else clause here - if info is not fresh, we simply don't set use-competition-factor? to true
+        ]
+
+        ;; Debug output for no/stale information
+        if not use-competition-factor? and debug-memory and (ticks mod debug-interval = 0) [
+          print "     No fresh competition information available for this restaurant"
+        ]
       ]
-      let competition-factor max list 0 (5 - waiting-count)
 
       if debug-memory and (ticks mod debug-interval = 0)[
-        print (word "     Demand Score: " precision demand-score 2"  (weight: 0.5)")
+        print (word "     Demand Score: " precision demand-score 2"  (weight: 0.6)")
         print (word "     Distance Factor: " precision distance-factor 2"  (weight: 0.3)")
-        print (word "     Competition Factor: " precision competition-factor 2"  (weight: 0.1)")
-      ]
-      ;; Calculate overall heat score
-      let heat-score (demand-score * 0.6) + (distance-factor * 0.3) + (competition-factor * 0.1)
 
-       if debug-memory and (ticks mod debug-interval = 0)[
+        if use-competition-factor? [
+          print (word "     Competition Factor: " precision competition-factor 2"  (weight: 0.1)")
+        ]
+      ]
+
+      ;; Calculate overall heat score based on available information
+      let heat-score 0
+
+      ifelse use-competition-factor? and cooperativeness-level >= 2 [
+        ;; Include competition factor when available
+        set heat-score (demand-score * 0.6) + (distance-factor * 0.3) + (competition-factor * 0.1)
+      ][
+        ;; No competition factor - redistribute weights
+        set heat-score (demand-score * 0.7) + (distance-factor * 0.3)
+      ]
+
+      if debug-memory and (ticks mod debug-interval = 0)[
         print (word "     Heat Score: " precision heat-score 2)
       ]
 
@@ -1951,7 +2013,7 @@ to check-rewards
 
       ;; If we're at a restaurant, check if any jobs are available first
       if status = "waiting-for-next-job" [
-        check-neighbourhood
+        check-neighbourhood-updated
       ]
 
       ;; Check if courier is already at the best restaurant
@@ -2071,45 +2133,25 @@ to check-rewards
 
   ;; Check logic for other autonomy levels
   if ((status = "moving-towards-restaurant") or (status = "waiting-for-next-job")) [
-      ;; Medium autonomy behavior
-      if ((autonomy-level = 2) and (status = "waiting-for-next-job"))[
+    ;; Medium autonomy behavior
+    if ((autonomy-level = 2) and (status = "waiting-for-next-job"))[
 
-        find-best-local-restaurant
-
-        if ((current-highest-reward < free-moving-threshold) and (memory-fade > 0) and (total-reward > 0)) [
+      if (status = "waiting-for-next-job") and ((current-highest-reward < free-moving-threshold) and (memory-fade > 0) and (total-reward > 0)) [
+        ;; Modified behavior for cooperativeness level 2
+        ;; Instead of random searching, go to least crowded restaurant
+        ifelse cooperativeness-level >= 2 [
+          if ticks mod debug-interval = strategic-repositioning-interval[
+            move-to-least-crowded-restaurant
+          ]
+        ][
+          ;; Original behavior for cooperativeness level < 2
           set status "searching-for-next-job"
           set color green
           set waiting-at-restaurant nobody
-
         ]
       ]
-
-      ;; Low autonomy behavior
-;      if (autonomy-level = 1) [
-;        set status "moving-towards-restaurant"
-;        set color blue
-;        if current-job != nobody [
-;          set next-location [origin] of current-job
-;        ]
-;        if (patch-here = next-location) [
-;          set status "waiting-for-next-job"
-;          set color orange
-;        ]
-;      ]
-
-      ;; High cooperation behavior
-      if (cooperativeness-level = 3) [
-        ;; Future: implement neighbor-based adjustments
-      ]
-;    ] [
-    ;  if total-reward > 0 [
-        ;; Default to searching without memory
-    ;    set status "searching-for-next-job"
-    ;    set color green
-    ;    set waiting-at-restaurant nobody
-    ;  ]
     ]
- ; ]
+  ]
 end
 
 ;; Check and update restaurant colors
@@ -2817,7 +2859,7 @@ to check-neighbourhood-with-sharing
     ]
 
     ;; Debug output when debug-coop is on
-    if debug-coop [
+    if debug-coop and ticks mod debug-interval = 0 [
       print "=============== COOPERATIVE SHARING DEBUG ==============="
       print (word "Courier: " who)
       print (word "Current tick: " ticks)
@@ -2874,7 +2916,7 @@ to balanced-load-sharing [eligible-couriers temp-job]
       ;; All couriers have the same number of jobs - select the one with lowest who number
       set min-jobs-courier min-one-of eligible-couriers [who]
 
-      if debug-coop [
+      if debug-coop and ticks mod debug-interval = 0 [
         print "  TIE DETECTED: All couriers have the same number of jobs"
         print (word "  Selecting courier with lowest ID: #" [who] of min-jobs-courier)
       ]
@@ -2884,7 +2926,7 @@ to balanced-load-sharing [eligible-couriers temp-job]
     ]
 
     ;; Debug output
-    if debug-coop [
+    if debug-coop and ticks mod debug-interval = 0 [
       print (word "BALANCED LOAD ALGORITHM:")
       print (word "  Courier with fewest jobs: #" [who] of min-jobs-courier
              " (" [length jobs-performed] of min-jobs-courier " jobs)")
@@ -2920,7 +2962,7 @@ to balanced-load-sharing [eligible-couriers temp-job]
         face next-location
         set going-to-rest nobody
 
-        if debug-coop [
+        if debug-coop  and ticks mod debug-interval = 0[
           print "  Already at restaurant, moving directly to customer"
         ]
       ][
@@ -2930,7 +2972,7 @@ to balanced-load-sharing [eligible-couriers temp-job]
         set to-origin? true
         set to-destination? false
 
-        if debug-coop [
+        if debug-coop and ticks mod debug-interval = 0 [
           print "  Moving to restaurant for pickup"
         ]
       ]
@@ -3177,13 +3219,467 @@ end
 
 ;; Updated share-information procedure to include level 1 behavior
 to share-information
-  ;; Depending on cooperativeness level, apply different sharing strategies
+  ;; Different sharing strategies based on cooperativeness level
   if cooperativeness-level = 1 [
     share-local-job-info
   ]
 
-  ;; For level 2 and 3, we'll keep the existing code or placeholder
-  ;; This would be implemented in the original model
+  ;; New implementation for cooperativeness level 2
+  if cooperativeness-level = 2 [
+    share-restaurant-occupancy
+  ]
+
+  ;; Level 3 would be implemented in future work
+  if cooperativeness-level = 3 [
+    ;; Existing placeholder for level 3
+    ;; (Future: implement job handoff)
+  ]
+end
+
+;; New procedure for couriers to share restaurant occupancy information
+to share-restaurant-occupancy
+  ;; Only execute for cooperativeness level 2
+  if cooperativeness-level != 2 [
+    stop
+  ]
+  if debug-coop and ticks mod debug-interval = 0[
+  debug-sharing-event
+  ]
+  ;; Initialize restaurant-shared-record if it doesn't exist
+ ; if not is-list? restaurant-shared-record and not is-string? restaurant-shared-record [
+  ;  set restaurant-shared-record table:make
+; ]
+
+  ;; First, update our own knowledge about restaurants in our vicinity
+  let visible-restaurants restaurants in-radius neighbourhood-size
+
+  ;; Observe and record information about all restaurants we can see
+  if any? visible-restaurants [
+    ask visible-restaurants [
+      let this-restaurant self
+      let rest-id restaurant-id
+
+      ;; Count how many couriers are at this restaurant
+      let couriers-at-restaurant count couriers with [
+        status = "waiting-for-next-job" and
+        distance this-restaurant < 2
+      ]
+
+      ;; Have the courier remember what it directly observed
+      ask myself [
+        ;; Direct observations use current tick as the timestamp
+        if debug-coop and ticks mod debug-interval = 0 [
+        debug-direct-observation this-restaurant couriers-at-restaurant
+        ]
+        remember-restaurant-occupancy this-restaurant couriers-at-restaurant ticks "direct observation"
+      ]
+    ]
+  ]
+
+  ;; Now share information with nearby couriers
+  let nearby-couriers other couriers in-radius neighbourhood-size
+
+  if any? nearby-couriers [
+    ;; Share ALL our restaurant knowledge with nearby couriers
+    if table:length restaurant-occupancy > 0 [
+      ;; Create a list of restaurant information to share
+      let sharing-data []
+
+      ;; Prepare data about each restaurant we know about
+      foreach table:keys restaurant-occupancy [ rest-id-str ->
+        ;; Ensure rest-id is a number
+        let rest-id rest-id-str
+        if is-string? rest-id [
+          carefully [
+            set rest-id read-from-string rest-id
+          ][
+            ;; Skip if we can't parse the ID
+            stop
+          ]
+        ]
+
+        ;; Get our information about this restaurant
+        let couriers-count table:get restaurant-occupancy rest-id
+
+        ;; Important: Use the original observation timestamp, not current tick
+        let observation-time table:get occupancy-timestamps rest-id
+
+        ;; Find the restaurant agent
+        let restaurant-agent one-of restaurants with [restaurant-id = rest-id]
+
+        if restaurant-agent != nobody [
+          ;; Add to our sharing data
+          set sharing-data lput (list restaurant-agent couriers-count observation-time) sharing-data
+        ]
+      ]
+
+      ;; Share all our knowledge with each nearby courier
+      if not empty? sharing-data [
+        ask nearby-couriers [
+          foreach sharing-data [ data-item ->
+            let restaurant-agent item 0 data-item
+            let couriers-count item 1 data-item
+            let observation-time item 2 data-item
+
+            ;; Receive this information
+            remember-restaurant-occupancy restaurant-agent couriers-count observation-time "shared information"
+          ]
+        ]
+
+        ;; Record that we ourselves shared this information
+        foreach sharing-data [ data-item ->
+          let restaurant-agent item 0 data-item
+          let rest-id [restaurant-id] of restaurant-agent
+
+          ;; Make sure we have this in our own records as a restaurant we've shared info about
+          table:put restaurant-shared-record rest-id true
+        ]
+
+        ;; Debug output
+        if debug-coop and ticks mod debug-interval = 0 [
+          print "=============== COOPERATIVE SHARING (LEVEL 2) ==============="
+          print (word "Courier: " who)
+          print (word "Current tick: " ticks)
+          print (word "Shared information about " length sharing-data " restaurants with " count nearby-couriers " nearby couriers")
+          print "Shared restaurant information:"
+          foreach sharing-data [ data-item ->
+            let restaurant-agent item 0 data-item
+            let couriers-count item 1 data-item
+            let observation-time item 2 data-item
+            let age ticks - observation-time
+            print (word "  Restaurant #" [restaurant-id] of restaurant-agent ": "
+                  couriers-count " couriers (data age: " age " ticks)")
+          ]
+        ]
+      ]
+    ]
+  ]
+end
+
+
+;; Procedure for a courier to remember occupancy information about a restaurant
+to remember-restaurant-occupancy [shared-restaurant couriers-count observation-time source-type]
+  ;; Initialize tables if they don't exist
+ ; if not is-list? restaurant-occupancy and not is-string? restaurant-occupancy [
+ ;   print "creating occupancy table..."
+ ;   set restaurant-occupancy table:make
+ ; ]
+
+  ;if not is-list? occupancy-timestamps and not is-string? occupancy-timestamps [
+  ;  print "creating teimstampy table..."
+  ;  set occupancy-timestamps table:make
+  ;]
+
+  ;if not is-list? restaurant-shared-record and not is-string? restaurant-shared-record [
+  ;  set restaurant-shared-record table:make
+  ;]
+
+  ;; Get restaurant ID
+  let rest-id [restaurant-id] of shared-restaurant
+
+  ;; Only update if this information is fresher than what we already have
+  let should-update? true
+
+  if table:has-key? occupancy-timestamps rest-id [
+    let existing-timestamp table:get occupancy-timestamps rest-id
+
+    ;; Only update if the new observation is more recent
+    set should-update? observation-time > existing-timestamp
+
+    ;; Skip updating if this is the sharing courier receiving info about their own shared data
+    if source-type = "shared information" and observation-time = existing-timestamp [
+      set should-update? false
+
+      if debug-coop  and ticks mod debug-interval = 0[
+        print (word "Courier " who " ignored redundant information about Restaurant #" rest-id)
+      ]
+    ]
+  ]
+
+  ;; Update our knowledge if the information is fresher
+  if should-update? [
+    table:put restaurant-occupancy rest-id couriers-count
+    table:put occupancy-timestamps rest-id observation-time
+
+    ;; Debug output if enabled
+    if debug-coop  and ticks mod debug-interval = 0[
+      let data-age ticks - observation-time
+      print (word "Courier " who " updated restaurant information:")
+      print (word "  Restaurant #" rest-id " has " couriers-count " couriers")
+      print (word "  Information source: " source-type)
+      print (word "  Information age: " data-age " ticks")
+    ]
+  ]
+end
+
+to move-to-least-crowded-restaurant
+  ;; Only proceed if we have restaurant occupancy data
+  if not is-table? restaurant-occupancy or table:length restaurant-occupancy = 0 [
+    ;; No data available, fall back to original behavior
+    set status "searching-for-next-job"
+    set color green
+    set waiting-at-restaurant nobody
+
+  ;  if debug-coop and ticks mod debug-interval = 0 [
+      print (word "Courier " who " has no restaurant occupancy data, using random search")
+  ;  ]
+    stop
+  ]
+
+  ;; Find the restaurant with the minimum number of couriers
+  let least-crowded-id -1
+  let min-couriers 999
+
+  foreach table:keys restaurant-occupancy [ rest-id-str ->
+    ;; Convert string key to number if needed
+    let rest-id rest-id-str
+    if is-string? rest-id [
+      carefully [
+        set rest-id read-from-string rest-id
+      ][
+        ;; Skip this entry if we can't parse the rest-id
+        stop
+      ]
+    ]
+
+    let couriers-count table:get restaurant-occupancy rest-id
+
+    ;; Check if information is recent enough (within last 5 minutes)
+    let is-fresh? false
+    if table:has-key? occupancy-timestamps rest-id [
+      let info-age ticks - table:get occupancy-timestamps rest-id
+      set is-fresh? info-age <= 300  ;; 300 ticks = 5 minutes
+    ]
+
+    ;; Only consider fresh information
+    if is-fresh? and couriers-count < min-couriers [
+      set min-couriers couriers-count
+      set least-crowded-id rest-id
+    ]
+  ]
+
+  ;; If we found a valid restaurant, move towards it
+  ifelse least-crowded-id > 0 [
+    let target-restaurant one-of restaurants with [restaurant-id = least-crowded-id]
+
+    if target-restaurant != nobody [
+      ;; Restaurant exists, proceed to it
+      set next-location [patch-here] of target-restaurant
+      face next-location
+
+      ;; Update status
+      set status "moving-towards-restaurant"
+      set color blue  ;; Blue for strategic movement
+      set to-origin? false
+      set going-to-rest target-restaurant
+      set current-job nobody
+
+    ;  if debug-coop [
+        print (word "Courier " who " strategically moving to restaurant #" least-crowded-id)
+        print (word "  This restaurant has " min-couriers " couriers (lowest known)")
+     ; ]
+    ]
+  ][
+    ;; No valid target found, fall back to random search
+    set status "searching-for-next-job"
+    set color green
+    set waiting-at-restaurant nobody
+
+  ;  if debug-coop [
+      print (word "Courier " who " found no suitable restaurant, using random search")
+  ;  ]
+  ]
+end
+
+;; Procedure to debug courier knowledge tables
+to debug-courier-knowledge
+  ;; Print header
+  print "============= DEBUGGING COURIER KNOWLEDGE ============="
+  print (word "Current tick: " ticks)
+
+  ;; Create a list of all couriers for easier examination
+  let all-couriers sort couriers
+
+  ;; Print information for each courier
+  foreach all-couriers [ c ->
+    ask c [
+      print (word "\n=> COURIER " who " <============")
+      print (word "Status: " status)
+
+      ;; Check for correct initialization
+      print "\nTABLE INITIALIZATION CHECK:"
+      print (word "restaurant-occupancy is a table: " is-table? restaurant-occupancy)
+      print (word "occupancy-timestamps is a table: " is-table? occupancy-timestamps)
+      print (word "restaurant-shared-record is a table: " is-table? restaurant-shared-record)
+
+      ;; Print restaurant occupancy table
+      print "\nRESTAURANT OCCUPANCY TABLE:"
+      ifelse is-table? restaurant-occupancy [
+        let entries table:to-list restaurant-occupancy
+        ifelse not empty? entries [
+          foreach entries [ entry ->
+            let rest-id first entry
+            let counts last entry
+            print (word "  Restaurant #" rest-id ": " counts " couriers")
+          ]
+        ][
+          print "  <empty table>"
+        ]
+      ][
+        print "  <not a table>"
+      ]
+
+      ;; Print timestamps table
+      print "\nOCCUPANCY TIMESTAMPS TABLE:"
+      ifelse is-table? occupancy-timestamps [
+        let entries table:to-list occupancy-timestamps
+        ifelse not empty? entries [
+          foreach entries [ entry ->
+            let rest-id first entry
+            let timestamp last entry
+            print (word "  Restaurant #" rest-id ": timestamp " timestamp " (age: " (ticks - timestamp) " ticks)")
+          ]
+        ][
+          print "  <empty table>"
+        ]
+      ] [
+        print "  <not a table>"
+      ]
+
+      ;; Print shared record table
+      print "\nRESTAURANT SHARED RECORD TABLE:"
+      ifelse is-table? restaurant-shared-record [
+        let entries table:to-list restaurant-shared-record
+        ifelse not empty? entries [
+          foreach entries [ entry ->
+            let rest-id first entry
+            print (word "  Restaurant #" rest-id ": shared information")
+          ]
+        ][
+          print "  <empty table>"
+        ]
+      ][
+        print "  <not a table>"
+      ]
+
+      ;; Check for inconsistencies
+      if is-table? restaurant-occupancy and is-table? occupancy-timestamps [
+        print "\nCONSISTENCY CHECK:"
+        let occupancy-keys table:keys restaurant-occupancy
+        let timestamp-keys table:keys occupancy-timestamps
+
+        ;; Check for restaurants in occupancy but not in timestamps
+        foreach occupancy-keys [ k ->
+          if not table:has-key? occupancy-timestamps k [
+            print (word "  WARNING: Restaurant #" k " exists in occupancy table but not in timestamps table")
+          ]
+        ]
+
+        ;; Check for restaurants in timestamps but not in occupancy
+        foreach timestamp-keys [ k ->
+          if not table:has-key? restaurant-occupancy k [
+            print (word "  WARNING: Restaurant #" k " exists in timestamps table but not in occupancy table")
+          ]
+        ]
+      ]
+
+      ;; Add summary about nearby restaurants
+      print "\nCURRENT ENVIRONMENT:"
+      let visible-restaurants restaurants in-radius neighbourhood-size
+      print (word "  Restaurants within neighborhood: " count visible-restaurants)
+      if any? visible-restaurants [
+        print "  Nearby restaurants:"
+        ask visible-restaurants [
+          let waiting-count count couriers with [
+            status = "waiting-for-next-job" and
+            distance myself < 2
+          ]
+          print (word "    Restaurant #" restaurant-id ": " waiting-count " waiting couriers")
+        ]
+      ]
+
+      ;; Add information about nearby couriers
+      let nearby-couriers other couriers in-radius neighbourhood-size
+      print (word "  Couriers within neighborhood: " count nearby-couriers)
+      if any? nearby-couriers [
+        print "  Nearby couriers: "
+        foreach sort nearby-couriers [ nc ->
+          print (word "    Courier #" [who] of nc)
+        ]
+      ]
+    ]
+  ]
+
+  print "\n============= END DEBUGGING ============="
+end
+
+;; Helper reporter to check if a variable is a table
+to-report is-table? [var]
+  report is-list? var = false and is-string? var = false and is-number? var = false and var != 0 and var != false
+end
+
+;; Procedure to trace a specific direct observation event - call before remember-restaurant-occupancy
+to debug-direct-observation [restaurant-agent couriers-at-restaurant]
+  print "============= DIRECT OBSERVATION TRACE ============="
+  print (word "Courier: " who)
+  print (word "Current tick: " ticks)
+  print (word "Observing Restaurant #" [restaurant-id] of restaurant-agent)
+  print (word "Observed courier count: " couriers-at-restaurant)
+
+  ;; Print current state before update
+  print "\nCURRENT STATE BEFORE UPDATE:"
+  ifelse is-table? restaurant-occupancy and table:has-key? restaurant-occupancy [restaurant-id] of restaurant-agent [
+    print (word "  Current occupancy record: " table:get restaurant-occupancy [restaurant-id] of restaurant-agent)
+  ][
+    print "  No existing occupancy record"
+  ]
+
+  ifelse is-table? occupancy-timestamps and table:has-key? occupancy-timestamps [restaurant-id] of restaurant-agent [
+    print (word "  Current timestamp record: " table:get occupancy-timestamps [restaurant-id] of restaurant-agent)
+  ][
+    print "  No existing timestamp record"
+  ]
+
+  print "============= END TRACE ============="
+end
+
+;; Procedure to trace a sharing event - call at the beginning of share-restaurant-occupancy
+to debug-sharing-event
+  print "============= SHARING EVENT TRACE ============="
+  print (word "Courier: " who)
+  print (word "Current tick: " ticks)
+
+  ;; Print current state of tables
+  print "\nCURRENT KNOWLEDGE BEFORE SHARING:"
+  ifelse is-table? restaurant-occupancy [
+    let entries table:to-list restaurant-occupancy
+    ifelse not empty? entries [
+      foreach entries [ entry ->
+        let rest-id first entry
+        let counts last entry
+        let timestamp "unknown"
+        if is-table? occupancy-timestamps and table:has-key? occupancy-timestamps rest-id [
+          set timestamp table:get occupancy-timestamps rest-id
+        ]
+        print (word "  Restaurant #" rest-id ": " counts " couriers (timestamp: " timestamp ")")
+      ]
+    ][
+      print "  <no restaurant knowledge to share>"
+    ]
+  ][
+    print "  <restaurant-occupancy is not a table>"
+  ]
+
+  ;; Print info about nearby couriers
+  let nearby-couriers other couriers in-radius neighbourhood-size
+  print (word "\nFound " count nearby-couriers " couriers nearby:")
+  if any? nearby-couriers [
+    foreach sort nearby-couriers [ nc ->
+      print (word "  Courier #" [who] of nc)
+    ]
+  ]
+
+  print "============= END TRACE ============="
 end
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -4396,7 +4892,6 @@ to-report calculate-correlation [list1 list2]
     report 0  ;; Handle case where variance is zero
   ]
 end
-
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -4680,7 +5175,7 @@ autonomy-level
 autonomy-level
 0
 3
-3.0
+2.0
 1
 1
 NIL
@@ -4830,7 +5325,7 @@ debug-interval
 debug-interval
 0
 600
-120.0
+60.0
 60
 1
 NIL
@@ -5177,6 +5672,21 @@ debug-coop
 1
 1
 -1000
+
+SLIDER
+711
+668
+914
+701
+strategic-repositioning-interval
+strategic-repositioning-interval
+60
+60
+60.0
+60
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
