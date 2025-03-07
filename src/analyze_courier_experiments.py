@@ -182,7 +182,8 @@ def analyze_memory_effects(df):
     # Check if memory-related columns exist
     if 'UseMemory' not in df.columns or df['UseMemory'].isna().all():
         print("No memory data available for analysis")
-        return None
+        # Return an empty dictionary instead of None
+        return {"memory_summary": None, "fade_summary": None}
     
     # Compare metrics based on whether memory is used
     memory_groups = df.groupby('UseMemory')
@@ -348,14 +349,16 @@ def save_results_to_excel(results_dict, file_path):
         
         # Save autonomy level comparison
         if 'autonomy_summary' in results_dict and results_dict['autonomy_summary'] is not None:
-            results_dict['autonomy_summary'].to_excel(writer, sheet_name='Autonomy Level Analysis')
+            if not results_dict['autonomy_summary'].empty:  # Check if DataFrame is not empty
+                results_dict['autonomy_summary'].to_excel(writer, sheet_name='Autonomy Level Analysis')
         
         # Save cooperativeness level comparison
         if 'coop_summary' in results_dict and results_dict['coop_summary'] is not None:
-            results_dict['coop_summary'].to_excel(writer, sheet_name='Cooperativeness Analysis')
+            if not results_dict['coop_summary'].empty:  # Check if DataFrame is not empty
+                results_dict['coop_summary'].to_excel(writer, sheet_name='Cooperativeness Analysis')
         
         # Save memory effects analysis
-        if 'memory_effects' in results_dict:
+        if 'memory_effects' in results_dict and results_dict['memory_effects'] is not None:
             memory_data = results_dict['memory_effects']
             
             if 'memory_summary' in memory_data and memory_data['memory_summary'] is not None:
@@ -365,7 +368,7 @@ def save_results_to_excel(results_dict, file_path):
                 memory_data['fade_summary'].to_excel(writer, sheet_name='Memory Fade Effects')
         
         # Save workload balance analysis
-        if 'workload_balance' in results_dict:
+        if 'workload_balance' in results_dict and results_dict['workload_balance'] is not None:
             balance_data = results_dict['workload_balance']
             
             # Create a new sheet for workload balance
@@ -447,7 +450,7 @@ def save_results_to_excel(results_dict, file_path):
     
     print(f"All results saved to: {output_file}")
     return output_file
-
+    
 def compare_configurations_statistically(df):
     """
     Perform statistical comparison between different configurations and create 
@@ -632,7 +635,7 @@ def main():
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
     else:
-        file_path = "courier_experiment_results_12-12-19.649_pm_04-Mar-2025"
+        file_path = "courier_experiment_results_10-06-45.601_am_06-Mar-2025.csv"
     
     # Check if file_path has .csv extension, if not, add it
     if not file_path.endswith('.csv'):

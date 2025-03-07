@@ -3107,8 +3107,8 @@ to check-neighbourhood-updated
     stop
   ]
 
-  ;; Apply cooperative behavior for level 1 and higher
-  if cooperativeness-level > 0 [
+  ;; Apply cooperative behavior for level 1
+  if cooperativeness-level = 1 [
     check-neighbourhood-with-sharing
     stop
   ]
@@ -4731,7 +4731,7 @@ free-moving-threshold
 free-moving-threshold
 0
 50
-10.0
+5.0
 1
 1
 NIL
@@ -4990,7 +4990,7 @@ SWITCH
 216
 vary-autonomy?
 vary-autonomy?
-0
+1
 1
 -1000
 
@@ -5001,7 +5001,7 @@ SWITCH
 251
 vary-cooperativeness?
 vary-cooperativeness?
-0
+1
 1
 -1000
 
@@ -5034,7 +5034,7 @@ SWITCH
 355
 include-custom-configs?
 include-custom-configs?
-1
+0
 1
 -1000
 
@@ -5174,7 +5174,7 @@ SWITCH
 208
 debug-coop
 debug-coop
-1
+0
 1
 -1000
 
