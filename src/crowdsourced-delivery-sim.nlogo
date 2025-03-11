@@ -91,6 +91,7 @@ couriers-own [
   restaurant-occupancy      ;; Table storing known courier counts at restaurants
   occupancy-timestamps      ;; Table storing when occupancy information was last updated
   restaurant-shared-record  ;; Table to track which restaurants this courier has shared information about
+  heat-map-updated?         ;; Flag to track if heat map was updated through sharing
 ]
 
 ;; Customer properties
@@ -370,10 +371,12 @@ to setup-couriers
       set occupancy-timestamps table:make  ;; Table to track information freshness
       set restaurant-shared-record table:make  ;; Table to track which restaurants have been shared
 
+      set heat-map-updated? false
+
       set rest-id rest-id + 1
     ]
   ]
-  debug-courier-knowledge
+  ;;debug-courier-knowledge
 end
 
 ;; Initialize reward tracking tables for a courier
@@ -566,6 +569,11 @@ to go
   if debug-coop and ticks mod debug-interval = 0 [
     debug-courier-knowledge
   ]
+
+  ;; Debug heat map sharing every debug-interval ticks
+  if cooperativeness-level = 3 and autonomy-level = 3 and debug-coop and ticks mod debug-interval = 0 [
+    debug-heat-map-sharing
+  ]
   tick
 end
 
@@ -692,9 +700,15 @@ end
 
 
 to update-heat-map
-  ;; First, apply decay to existing heat map scores
-  ;; This ensures values decrease over time if not refreshed
-  ;decay-heat-map-scores
+  ;; Skip the regular update if our heat map was just updated through sharing
+  if heat-map-updated? [
+    set heat-map-updated? false
+
+    if debug-memory and (ticks mod debug-interval = 0) [
+      print "Heat map already updated through sharing, skipping standard update"
+    ]
+    stop
+  ]
 
   if debug-memory and (ticks mod debug-interval = 0)[
     print "=============== UPDATING HEATMAP ==============="
@@ -800,6 +814,105 @@ to update-heat-map
     ]
 
     set i i + 1
+  ]
+end
+
+to debug-heat-map-sharing
+  print "============= HEAT MAP SHARING DEBUG ==============="
+  print (word "Current tick: " ticks)
+
+  ;; Count couriers with level 3 autonomy and cooperativeness
+  let level3-couriers couriers with [autonomy-level = 3 and cooperativeness-level = 3]
+  print (word "Couriers with Level 3 Autonomy & Cooperativeness: " count level3-couriers)
+
+  ;; Sample a few couriers for heat map analysis
+  let sample-size min list 3 count level3-couriers
+  let sample-couriers n-of sample-size level3-couriers
+
+  print "Sample Heat Map Analysis:"
+
+  ask sample-couriers [
+    print (word "\nCourier #" who)
+    print (word "  Total heat map entries: " table:length heat-map)
+
+    ;; Sort heat map entries by value (descending)
+    let sorted-entries sort-by [ [a b] -> last a > last b ] table:to-list heat-map
+
+    ;; Show top 5 heat map entries
+    print "  Top heat scores:"
+    let count-shown 0
+    foreach sorted-entries [
+      entry ->
+      if count-shown < 5 [
+        let loc-key first entry
+        let score last entry
+        print (word "    Location " loc-key ": " precision score 2)
+        set count-shown count-shown + 1
+      ]
+    ]
+  ]
+
+  ;; Show heat map similarity statistics
+  if count level3-couriers >= 2 [
+    print "\nHeat Map Similarity Analysis:"
+
+    ;; Compare first courier to others
+    let base-courier first sort level3-couriers
+    let base-heat-map [heat-map] of base-courier
+
+    ask level3-couriers with [who != [who] of base-courier] [
+      ;; Calculate similarity score
+      let similarity calculate-heat-map-similarity base-heat-map heat-map
+      print (word "  Courier #" who " has " precision (similarity * 100) 1 "% similarity with Courier #" [who] of base-courier)
+    ]
+  ]
+
+  print "========================================================="
+end
+
+;; Calculate similarity between two heat maps (0-1 scale)
+to-report calculate-heat-map-similarity [heat-map1 heat-map2]
+  ;; Get all unique locations
+  let all-locations remove-duplicates (sentence table:keys heat-map1 table:keys heat-map2)
+
+  ;; If no locations, return 0
+  if empty? all-locations [
+    report 0
+  ]
+
+  let total-diff 0
+  let max-possible-diff 0
+  let location-count 0
+
+  ;; Calculate differences for each location
+  foreach all-locations [ loc-key ->
+    let val1 0
+    let val2 0
+
+    if table:has-key? heat-map1 loc-key [
+      set val1 table:get heat-map1 loc-key
+    ]
+
+    if table:has-key? heat-map2 loc-key [
+      set val2 table:get heat-map2 loc-key
+    ]
+
+    ;; Only count locations that have a value in at least one map
+    if val1 > 0 or val2 > 0 [
+      let max-val max list val1 val2
+      let diff abs (val1 - val2)
+
+      set total-diff total-diff + diff
+      set max-possible-diff max-possible-diff + max-val
+      set location-count location-count + 1
+    ]
+  ]
+
+  ;; Calculate similarity (1 - normalized difference)
+  ifelse max-possible-diff > 0 [
+    report 1 - (total-diff / max-possible-diff)
+  ][
+    report 0
   ]
 end
 
@@ -2140,7 +2253,7 @@ to check-rewards
         ;; Modified behavior for cooperativeness level 2
         ;; Instead of random searching, go to least crowded restaurant
         ifelse cooperativeness-level >= 2 [
-          if ticks mod debug-interval = strategic-repositioning-interval[
+          if ticks mod strategic-repositioning-interval = 0[
             move-to-least-crowded-restaurant
           ]
         ][
@@ -2926,7 +3039,7 @@ to balanced-load-sharing [eligible-couriers temp-job]
     ]
 
     ;; Debug output
-    if debug-coop and ticks mod debug-interval = 0 [
+    if debug-coop and ticks mod debug-interval = 0  [
       print (word "BALANCED LOAD ALGORITHM:")
       print (word "  Courier with fewest jobs: #" [who] of min-jobs-courier
              " (" [length jobs-performed] of min-jobs-courier " jobs)")
@@ -3217,6 +3330,115 @@ to check-neighbourhood-updated
   ]
 end
 
+;; Procedure to share heat maps between couriers
+to share-heat-maps
+  ;; Only execute for couriers with autonomy level 3 and cooperativeness level 3
+  if not (autonomy-level = 3 and cooperativeness-level = 3) [
+    stop
+  ]
+
+  ;; Reset the updated flag at the beginning of each sharing cycle
+  set heat-map-updated? false
+
+  ;; Find nearby couriers to share with
+  let nearby-couriers other couriers with [
+    distance myself < neighbourhood-size and
+    autonomy-level = 3 and
+    cooperativeness-level = 3
+  ]
+
+  if any? nearby-couriers [
+    if debug-sharing [
+      print "=============== HEAT MAP SHARING ==============="
+      print (word "Courier: " who)
+      print (word "Current tick: " ticks)
+      print (word "Found " count nearby-couriers " nearby couriers for heat map sharing")
+
+      ;; Debug - show current heat map size
+      let heat-entries table:to-list heat-map
+      print (word "My heat map has " length heat-entries " entries")
+    ]
+
+    ;; Share my heat map with all nearby couriers
+    ask nearby-couriers [
+      ;; Receive heat map from the sharing courier
+      receive-heat-map [heat-map] of myself
+
+      if debug-sharing [
+        print (word "Courier " who " received heat map from Courier " [who] of myself)
+      ]
+    ]
+  ]
+end
+
+;; Procedure to receive and merge a heat map
+to receive-heat-map [received-heat-map]
+  ;; Flag that an update occurred
+  set heat-map-updated? true
+
+  if debug-sharing [
+    print (word "Courier " who " updating heat map with ego-level: " ego-level)
+
+    ;; Show current heat map entry count
+    let my-entries table:to-list heat-map
+    print (word "  Current heat map entries: " length my-entries)
+
+    ;; Show received heat map entry count
+    let received-entries table:to-list received-heat-map
+    print (word "  Received heat map entries: " length received-entries)
+  ]
+
+  ;; Get all unique location keys from both heat maps
+  let all-locations remove-duplicates (sentence table:keys heat-map table:keys received-heat-map)
+
+  ;; Iterate through all locations and update the heat-map
+  foreach all-locations [ loc-key ->
+    let my-value 0
+    let their-value 0
+
+    ;; Get values if they exist in each map
+    if table:has-key? heat-map loc-key [
+      set my-value table:get heat-map loc-key
+    ]
+
+    if table:has-key? received-heat-map loc-key [
+      set their-value table:get received-heat-map loc-key
+    ]
+
+    ;; Calculate new value based on ego-parameter
+    ;; ego-parameter controls how much we weight our own assessment vs. others
+    let new-value (my-value * ego-level) + (their-value * (1 - ego-level))
+
+    ;; Update our heat map with the new value
+    table:put heat-map loc-key new-value
+
+    if debug-sharing and (my-value > 0 or their-value > 0) [
+      ;; Only show meaningful updates for debugging
+      print (word "  Location " loc-key ": My value=" precision my-value 2
+             ", Their value=" precision their-value 2
+             ", New value=" precision new-value 2)
+    ]
+  ]
+
+  if debug-sharing [
+    ;; Show updated heat map entry count
+    let updated-entries table:to-list heat-map
+    print (word "  Updated heat map now has " length updated-entries " entries")
+    print "-----------------------------------------------"
+  ]
+end
+
+;; Helper function to remove duplicates from a list
+to-report remove-duplicate-values [input-list]
+  let result []
+  foreach input-list [ value ->
+    if not member? value result [
+      set result lput value result
+    ]
+  ]
+  report result
+end
+
 ;; Updated share-information procedure to include level 1 behavior
 to share-information
   ;; Different sharing strategies based on cooperativeness level
@@ -3231,8 +3453,13 @@ to share-information
 
   ;; Level 3 would be implemented in future work
   if cooperativeness-level = 3 [
-    ;; Existing placeholder for level 3
-    ;; (Future: implement job handoff)
+    ;; Only share at the defined interval to prevent constant sharing
+    if (ticks mod share-heat-map-interval = 0) [
+      share-heat-maps
+    ]
+
+    ;; Continue to share restaurant occupancy (from level 2)
+    share-restaurant-occupancy
   ]
 end
 
@@ -3262,7 +3489,7 @@ to share-restaurant-occupancy
       ;; Count how many couriers are at this restaurant
       let couriers-at-restaurant count couriers with [
         status = "waiting-for-next-job" and
-        distance this-restaurant < 2
+        distance this-restaurant < courier-proximity-threshold
       ]
 
       ;; Have the courier remember what it directly observed
@@ -3448,7 +3675,7 @@ to move-to-least-crowded-restaurant
     let is-fresh? false
     if table:has-key? occupancy-timestamps rest-id [
       let info-age ticks - table:get occupancy-timestamps rest-id
-      set is-fresh? info-age <= 300  ;; 300 ticks = 5 minutes
+      set is-fresh? info-age <= 30  ;; 300 ticks = 5 minutes
     ]
 
     ;; Only consider fresh information
@@ -3459,7 +3686,7 @@ to move-to-least-crowded-restaurant
   ]
 
   ;; If we found a valid restaurant, move towards it
-  ifelse least-crowded-id > 0 [
+  ifelse least-crowded-id > 0 and min-couriers <= max-courier-threshold [
     let target-restaurant one-of restaurants with [restaurant-id = least-crowded-id]
 
     if target-restaurant != nobody [
@@ -3486,7 +3713,7 @@ to move-to-least-crowded-restaurant
     set waiting-at-restaurant nobody
 
   ;  if debug-coop [
-      print (word "Courier " who " found no suitable restaurant, using random search")
+      print (word "Courier " who " found no suitable restaurant, already " min-couriers " couriers at restaurant #"least-crowded-id ", using random search")
   ;  ]
   ]
 end
@@ -3592,7 +3819,7 @@ to debug-courier-knowledge
         ask visible-restaurants [
           let waiting-count count couriers with [
             status = "waiting-for-next-job" and
-            distance myself < 2
+            distance myself < courier-proximity-threshold
           ]
           print (word "    Restaurant #" restaurant-id ": " waiting-count " waiting couriers")
         ]
@@ -3749,7 +3976,7 @@ to build-configuration-list
 
       ;; If also varying cooperativeness
       ifelse vary-cooperativeness? [
-        let coop-values [1 2 3]
+        let coop-values [0 1 2 3]
 
         foreach coop-values [ c-val ->
           ;; Create a list containing two parameter pairs
@@ -5175,22 +5402,22 @@ autonomy-level
 autonomy-level
 0
 3
-2.0
+3.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-12
-122
-184
-155
+11
+121
+183
+154
 cooperativeness-level
 cooperativeness-level
 0
 3
-1.0
+3.0
 1
 1
 NIL
@@ -5226,7 +5453,7 @@ free-moving-threshold
 free-moving-threshold
 0
 50
-10.0
+20.0
 1
 1
 NIL
@@ -5297,7 +5524,7 @@ SWITCH
 595
 opportunistic-switch
 opportunistic-switch
-0
+1
 1
 -1000
 
@@ -5590,7 +5817,7 @@ INPUTBOX
 1399
 573
 analysis-file-path
-C:\\Users\\deazb\\Documents\\GitHub\\self-organizing-crowdsourced-food-delivery-system\\experiments
+C:\\Users\\deazb\\Documents\\GitHub\\self-organizing-crowdsourced-food-delivery-system\\experiments\\courier_experiment_results_02-58-38.079_pm_10-Mar-2025.csv
 1
 0
 String
@@ -5681,38 +5908,250 @@ SLIDER
 strategic-repositioning-interval
 strategic-repositioning-interval
 60
-60
-60.0
+600
+360.0
 60
 1
 NIL
 HORIZONTAL
 
+SLIDER
+739
+728
+911
+761
+max-courier-threshold
+max-courier-threshold
+0
+10
+1.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+737
+763
+921
+796
+courier-proximity-threshold
+courier-proximity-threshold
+0
+10
+2.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+635
+821
+807
+854
+share-heat-map-interval
+share-heat-map-interval
+60
+600
+180.0
+60
+1
+NIL
+HORIZONTAL
+
+SLIDER
+860
+834
+1032
+867
+ego-level
+ego-level
+0
+1
+0.0
+0.05
+1
+NIL
+HORIZONTAL
+
+SWITCH
+977
+212
+1106
+245
+debug-sharing
+debug-sharing
+1
+1
+-1000
+
 @#$#@#$#@
 ## WHAT IS IT?
 
-(a general understanding of what the model is trying to show or explain)
+This model simulates autonomous (bike) couriers working in a food delivery system. The couriers navigate a city environment, picking up orders at restaurants and delivering them to customers. The simulation focuses on how different levels of autonomy and cooperation between couriers affect the overall system efficiency.
+
+The model explores questions such as:
+- How do different decision-making strategies affect courier earnings and customer wait times?
+- What is the impact of memory and learning on courier performance?
+- How does information sharing between couriers influence system-wide efficiency?
+- What is the optimal balance between individual autonomy and collective coordination?
 
 ## HOW IT WORKS
 
-(what rules the agents use to create the overall behavior of the model)
+The environment consists of:
+- **Restaurants**: Located in clusters throughout the city, restaurants generate delivery jobs
+- **Customers**: Randomly placed on the map, customers are the destinations for deliveries
+- **Couriers**: Mobile agents that pick up and deliver food orders
+- **Jobs**: Represent delivery orders that need to be fulfilled
+
+Courier behavior is governed by two key parameters:
+1. **Autonomy Level** (0-3): Controls how independently couriers make decisions
+   - Level 0: Couriers stay at one assigned restaurant
+   - Level 1: Couriers return to the last restaurant after delivery
+   - Level 2: Couriers use memory to choose restaurants based on past rewards
+   - Level 3: Couriers use predictive algorithms to anticipate demand patterns
+2. **Cooperativeness Level** (0-3): Determines how much information couriers share
+   - Level 0: No information sharing
+   - Level 1: Couriers share job information within their neighborhood
+   - Level 2: Couriers share restaurant occupancy information
+   - Level 3: Couriers share their heat maps of predicted restaurant demand
+
+Couriers maintain memory of restaurant performance, which can fade over time using different algorithms. They also develop "heat maps" of restaurant demand based on experience and/or shared information.
 
 ## HOW TO USE IT
 
-(how to use the model, including a description of each of the items in the Interface tab)
+### Basic Controls
+- **Setup**: Initialize the simulation
+- **Go**: Run the simulation
+- **Toggle Cluster Lines**: Show/hide lines connecting restaurants to cluster centers
+
+### Main Parameters
+- **autonomy-level**: Set courier decision-making independence (0-3)
+- **cooperativeness-level**: Set information sharing level (0-3)
+- **courier-population**: Number of couriers in the simulation
+- **neighbourhood-size**: How far couriers can sense nearby jobs
+- **job-arrival-rate**: Frequency of new job creation
+- **restaurant-clusters**: Number of restaurant groupings
+- **restaurants-per-cluster**: Number of restaurants in each cluster
+- **cluster-area-size**: Size of restaurant cluster areas
+
+### Memory Settings
+- **use-memory**: Toggle whether couriers remember restaurant performance
+- **memory-fade**: Rate at which memory decays over time
+- **level-of-order**: Memory capacity for each restaurant
+- **fade-strategy**: Algorithm used for memory decay (None, Linear, Exponential, Recency-weighted)
+- **free-moving-threshold**: Minimum expected reward for a courier to stay at a restaurant
+
+### Autonomy Level 3 Settings
+- **learning-model-chooser**: Select between "Demand Prediction" and "Learning and Adaptation"
+- **learning-rate**: How quickly couriers update their predictions
+- **start-prediction-weight**: Initial balance between historical patterns and recent demand
+- **first-go-back-to-rest**: Force couriers to return to restaurants after delivery
+- **opportunistic-switch**: Allow couriers to switch jobs opportunistically
+- **switch-threshold**: Percentage improvement required to switch jobs
+
+### Cooperativeness Level 3 Settings
+- **share-heat-map-interval**: How often couriers share heat maps (in ticks)
+- **ego-parameter**: How much couriers trust their own heat map vs. received heat maps (0-1)
+
+### Debugging Options
+- **debug-memory**: Show detailed memory information
+- **debug-demand-prediction**: Show demand prediction details
+- **debug-coop**: Show information sharing details
+- **debug-interval**: How often to print debug information
+
+### Experiment Controls
+
+The model includes a robust experiment framework for running systematic batch experiments with different parameter combinations:
+
+- **experiment-runs-per-config**: Number of runs to perform for each parameter configuration (higher values provide better statistical reliability)
+- **experiment-ticks-per-run**: Duration of each simulation run in ticks (longer runs show long-term system behavior)
+- **experiment-base-seed**: Starting random seed (ensures reproducibility while allowing variation between runs)
+
+#### Parameter Variation Settings
+Toggle which parameters to vary systematically during batch experiments:
+- **vary-autonomy?**: Test all autonomy levels (0-3)
+- **vary-cooperativeness?**: Test all cooperativeness levels (0-3)
+- **vary-memory?**: Test different memory settings
+- **vary-prediction-weight?**: Test different prediction weights for autonomy level 3
+- **include-custom-configs?**: Include user-defined parameter combinations
+
+#### Experiment Control Buttons
+- **Setup Experiments**: Prepare the experiment configurations based on selected parameters
+- **Run Experiments**: Execute all experiment configurations sequentially
+- **Stop Experiments**: Halt the current experiment
+
+#### Analysis Tools
+- **analysis-file-path**: Location for exporting and analyzing results
+- **Analyze Results**: Process experiment data to identify patterns and trends
+
+#### Working with Custom Configurations
+
+To add custom parameter combinations to your experiments:
+
+1. Enable **include-custom-configs?** switch
+2. Locate the `build-configuration-list` procedure in the code
+3. Add your custom configurations in the following format:
+
+```
+set experiment-configs lput (list
+  (list "parameter-name-1" value-1)
+  (list "parameter-name-2" value-2)
+  (list "parameter-name-3" value-3)
+  ...
+) experiment-configs
+```
+
+Example of adding a custom configuration:
+```
+set experiment-configs lput (list
+  (list "autonomy-level" 3)
+  (list "cooperativeness-level" 3)
+  (list "use-memory" true)
+  (list "memory-fade" 5)
+  (list "ego-parameter" 0.7)
+  (list "share-heat-map-interval" 120)
+) experiment-configs
+```
+
+The experiment system will automatically run your custom configurations alongside any systematically varied parameters, and results will be included in the analysis outputs.
 
 ## THINGS TO NOTICE
 
-(suggested things for the user to notice while running the model)
+- **Courier Colors**: Different colors indicate courier status
+  - Red: On delivery
+  - Orange: Waiting at restaurant
+  - Green: Searching randomly 
+  - Blue: Moving toward chosen restaurant
+  - Grey: Moving to pickup restaurant for a job
+
+- **Restaurant Colors**:
+  - Orange: Has pending jobs
+  - White: No pending jobs
+
+- **System Performance**:
+  - Monitor the ratio of random vs. memory-based job acquisitions
+  - Track courier earnings over time
+  - Observe how courier activities distribute among waiting, delivering, and searching
+
+- **Emergent Behaviors**:
+  - Watch for clustering of couriers at high-demand restaurants
+  - Notice how memory and cooperation affect courier distribution
+  - Observe adaptation to changing demand patterns
 
 ## THINGS TO TRY
 
-(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+- **Compare Autonomy Levels**: Run the model with different autonomy levels while keeping other parameters constant
+- **Test Cooperation**: Compare performance with varying levels of courier cooperation
+- **Memory Parameters**: Experiment with different memory fade strategies and values
+- **Environment Changes**: Modify restaurant clusters and distribution to see how couriers adapt
+- **Prediction Weight**: For level 3 autonomy, adjust the prediction weight to balance historical patterns versus recent trends
+- **Heat Map Sharing**: For level 3 cooperation, try different ego-parameter values to see how shared knowledge affects system performance
 
-### Memory fade
+### Memory Fade
 
-For each memory fade algorithm, the suitable values for the memory-fade parameter will differ based on how aggressively each algorithm applies the fade. Note that this is also connected to the the instance (e.g., job arrival rate, number of restaurants). If the instance does not generate enough demand, the memory of each courier is not updated frequently, resulting in reaching the free-moving threshold earlier. Also the cluster size and neigbourhood-size is important (if coop > 0). If the cluster is too disperse and/or the neighbourhood size too small, couriers remain at a single restaurant, not getting frequent new entries into their memory. 
-
+For each memory fade algorithm, the suitable values for the memory-fade parameter will differ based on how aggressively each algorithm applies the fade. Note that this is also connected to the instance (e.g., job arrival rate, number of restaurants). If the instance does not generate enough demand, the memory of each courier is not updated frequently, resulting in reaching the free-moving threshold earlier. Also, the cluster size and neighbourhood-size are important (if coop > 0). If the cluster is too disperse and/or the neighbourhood size too small, couriers remain at a single restaurant, not getting frequent new entries into their memory. 
 
 Here are recommended ranges for each strategy:
 
@@ -5732,11 +6171,8 @@ Here are recommended ranges for each strategy:
 - **Explanation**: This algorithm is designed to strongly preserve recent memories while allowing older ones to fade more rapidly. It can handle higher fade rates without losing important recent information.
 
 #### When to use different values:
-
 - **Low values** (0.5-3%): Use when you want memories to persist for a long time, creating couriers with long-term stable behaviors.
-
 - **Medium values** (3-10%): Good balanced approach for most simulations, allowing gradual adaptation while maintaining some history.
-
 - **High values** (10-20%): Use when you want couriers to adapt quickly to changing conditions, with little influence from older experiences.
 
 When experimenting, I recommend starting with these values:
@@ -5746,21 +6182,61 @@ When experimenting, I recommend starting with these values:
 
 Then adjust based on how quickly you want memories to fade in your specific simulation scenario. The debug output will help you visualize how different values affect the memory over time.
 
+### Heat Map Sharing
+
+When using heat map sharing (cooperativeness-level 3 with autonomy-level 3):
+
+- **ego-parameter** controls how much a courier trusts its own heat map versus those received from others:
+  - **0.0**: Courier completely trusts others' heat maps (overwrites own knowledge)
+  - **0.5**: Equal weight to own and received heat maps
+  - **1.0**: Courier only trusts its own heat map (ignores others)
+
+- **share-heat-map-interval** determines sharing frequency:
+  - Lower values (60-120 ticks): Frequent sharing, faster convergence but more computational overhead
+  - Higher values (300-600 ticks): Less frequent sharing, maintains more diversity in courier knowledge
+
+Recommended starting values:
+- ego-parameter: 0.5 (balanced approach)
+- share-heat-map-interval: 180 (moderate sharing frequency)
+
 ## EXTENDING THE MODEL
 
-(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+Potential extensions to the model include:
+
+1. **Dynamic Demand Patterns**: Implement time-based demand changes where certain restaurant clusters become popular at different times of day
+2. **Multi-Job Pickup**: Allow couriers to pick up multiple orders from the same restaurant
+3. **Courier Learning**: Add machine learning algorithms for couriers to optimize decision strategies
+4. **Restaurant Quality**: Implement variable job values based on restaurant profitability
+5. **Traffic Conditions**: Add traffic congestion that affects travel speed in different areas
+6. **Courier Specialization**: Allow couriers to specialize in serving particular areas or restaurant types
+7. **Platform-Based Coordination**: Implement a central platform that can assign jobs to couriers
+8. **Customer Satisfaction**: Track delivery time impact on customer satisfaction and future orders
+9. **Economic Incentives**: Implement surge pricing during high demand periods
 
 ## NETLOGO FEATURES
 
-(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+This model makes use of several NetLogo features:
+
+- **Tables**: The model uses the NetLogo table extension for efficient key-value storage (for heat maps, restaurant occupancy, and other data structures)
+- **Links**: Visual connections between restaurants and their clusters
+- **Agent Breeds**: Multiple agent types with different behaviors (couriers, restaurants, jobs, customers)
+- **Experimental Framework**: Built-in experimental tools for systematic parameter exploration
 
 ## RELATED MODELS
 
-(models in the NetLogo Models Library and elsewhere which are of related interest)
+- NetLogo Models Library: "Traffic Grid"
+- NetLogo Models Library: "Memory"
+- NetLogo Models Library: "Hotelling's Law"
+- NetLogo Models Library: "Restaurants"
+- NetLogo Models Library: "Wilensky, U. (1999). Ant Foraging"
 
 ## CREDITS AND REFERENCES
 
-(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)
+Model developed as part of research into self-organizing delivery systems.
+
+Related research:
+- Reyes, D., Erera, A. L., & Savelsbergh, M. W. (2018). "Crowdsourced Delivery: A Dynamic Pickup and Delivery Problem with Ad Hoc Drivers".
+- Vazifeh, M. M., et al. (2018). "Addressing the Minimum Fleet Problem in On-demand Urban Mobility".
 @#$#@#$#@
 default
 true
