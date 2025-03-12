@@ -246,6 +246,229 @@ def analyze_workload_balance(df):
         'efficiency_balance': efficiency_balance
     }
 
+def plot_efficiency_balance_ratio(df, output_dir='./figures'):
+    """
+    Create a scatter plot showing the efficiency-to-balance ratio.
+    X-axis: Autonomy Level
+    Y-axis: Cooperativeness Level
+    Size of points: Efficiency-to-Balance Ratio (scaled to 0-1)
+    """
+    print("\n=== GENERATING EFFICIENCY-BALANCE RATIO SCATTER PLOT ===")
+    
+    # Create output directory if it doesn't exist
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Check if required columns exist
+    required_cols = ['AutonomyLevel', 'CooperativenessLevel', 'EfficiencyToBalanceRatio']
+    if not all(col in df.columns for col in required_cols):
+        print("Missing required columns for efficiency-balance ratio scatter plot")
+        return
+    
+    # Filter out rows with missing values
+    plot_df = df[required_cols].dropna()
+    
+    if len(plot_df) == 0:
+        print("No valid data for efficiency-balance ratio scatter plot")
+        return
+    
+    # Create the scatter plot
+    plt.figure(figsize=(12, 10))
+    
+    # Get unique values to create a better visualization
+    autonomy_levels = sorted(plot_df['AutonomyLevel'].unique())
+    coop_levels = sorted(plot_df['CooperativenessLevel'].unique())
+    
+    # Calculate average ratio for each (autonomy, coop) combination
+    summary_df = plot_df.groupby(['AutonomyLevel', 'CooperativenessLevel'])['EfficiencyToBalanceRatio'].mean().reset_index()
+    
+    # Scale the ratio to 0-1 range
+    min_ratio = summary_df['EfficiencyToBalanceRatio'].min()
+    max_ratio = summary_df['EfficiencyToBalanceRatio'].max()
+    
+    if min_ratio == max_ratio:  # Handle edge case where all values are the same
+        summary_df['ScaledRatio'] = 0.5
+    else:
+        summary_df['ScaledRatio'] = (summary_df['EfficiencyToBalanceRatio'] - min_ratio) / (max_ratio - min_ratio)
+    
+    # Create a scatter plot with size proportional to scaled ratio
+    scatter = plt.scatter(
+        summary_df['AutonomyLevel'],
+        summary_df['CooperativenessLevel'],
+        s=summary_df['ScaledRatio'] * 500,  # Larger scale for better visibility of scaled values
+        c=summary_df['ScaledRatio'],
+        cmap='viridis',
+        alpha=0.7,
+        edgecolors='black',
+        vmin=0,
+        vmax=1  # Force colormap to use full 0-1 range
+    )
+    
+    # Add colorbar
+    cbar = plt.colorbar(scatter)
+    cbar.set_label('Scaled Efficiency-to-Balance Ratio (0-1)', rotation=270, labelpad=20)
+    
+    # Add labels for each point showing both scaled and original values
+    for i, row in summary_df.iterrows():
+        plt.annotate(
+            f"{row['ScaledRatio']:.2f}\n({row['EfficiencyToBalanceRatio']:.2f})",
+            (row['AutonomyLevel'], row['CooperativenessLevel']),
+            textcoords="offset points",
+            xytext=(0, 5),
+            ha='center'
+        )
+    
+    # Set axis labels and title
+    plt.xlabel('Autonomy Level')
+    plt.ylabel('Cooperativeness Level')
+    plt.title('Scaled Efficiency-to-Balance Ratio (0-1) by Autonomy and Cooperativeness Levels')
+    
+    # Set x and y ticks to only show the actual levels
+    plt.xticks(autonomy_levels)
+    plt.yticks(coop_levels)
+    
+    # Add grid for better readability
+    plt.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add a legend explaining the scaling
+    plt.figtext(
+        0.5, 0.01,
+        f"Scaling: Original values from {min_ratio:.2f} to {max_ratio:.2f} scaled to 0-1 range.\nValues shown as: Scaled (Original)",
+        ha="center", fontsize=10, bbox={"facecolor":"lightgray", "alpha":0.5, "pad":5}
+    )
+    
+    # Save the figure
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/efficiency_balance_ratio_scaled_scatter.png")
+    print(f"Saved: efficiency_balance_ratio_scaled_scatter.png")
+    plt.close()
+
+def plot_efficiency_balance_heatmap(df, output_dir='./figures'):
+    """
+    Create a heatmap showing the efficiency-to-balance ratio across all combinations
+    of autonomy levels (x-axis) and cooperativeness levels (y-axis).
+    Y-axis is displayed from 0 (bottom) to 3 (top).
+    """
+    print("\n=== GENERATING EFFICIENCY-BALANCE RATIO HEATMAP ===")
+    
+    # Create output directory if it doesn't exist
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Check if required columns exist
+    required_cols = ['AutonomyLevel', 'CooperativenessLevel', 'EfficiencyToBalanceRatio']
+    if not all(col in df.columns for col in required_cols):
+        print("Missing required columns for efficiency-balance ratio heatmap")
+        return
+    
+    # Filter out rows with missing values
+    plot_df = df[required_cols].dropna()
+    
+    if len(plot_df) == 0:
+        print("No valid data for efficiency-balance ratio heatmap")
+        return
+    
+    # Calculate average ratio for each (autonomy, coop) combination
+    summary_df = plot_df.groupby(['AutonomyLevel', 'CooperativenessLevel'])['EfficiencyToBalanceRatio'].mean().reset_index()
+    
+    # Extract unique levels and sort them
+    autonomy_levels = sorted(plot_df['AutonomyLevel'].unique())
+    coop_levels = sorted(plot_df['CooperativenessLevel'].unique())
+    
+    # Create a 2D numpy array for the heatmap values
+    heatmap_data = np.zeros((len(coop_levels), len(autonomy_levels)))
+    
+    # Fill the array with values from the grouped data
+    for i, coop in enumerate(coop_levels):
+        for j, auto in enumerate(autonomy_levels):
+            # Filter to get the value for this combination
+            mask = (summary_df['AutonomyLevel'] == auto) & (summary_df['CooperativenessLevel'] == coop)
+            if any(mask):
+                heatmap_data[i, j] = summary_df.loc[mask, 'EfficiencyToBalanceRatio'].values[0]
+    
+    # Create the heatmap using imshow with origin='lower' to put (0,0) at bottom-left
+    plt.figure(figsize=(12, 10))
+    im = plt.imshow(heatmap_data, cmap='viridis', origin='lower', aspect='auto')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im)
+    cbar.set_label('Efficiency-to-Balance Ratio', rotation=270, labelpad=20)
+    
+    # Set ticks and labels
+    plt.xticks(range(len(autonomy_levels)), autonomy_levels)
+    plt.yticks(range(len(coop_levels)), coop_levels)
+    
+    # Add text annotations for the values
+    for i in range(len(coop_levels)):
+        for j in range(len(autonomy_levels)):
+            plt.text(j, i, f'{heatmap_data[i, j]:.2f}', 
+                     ha='center', va='center', color='white', fontweight='bold')
+    
+    # Add labels and title
+    plt.xlabel('Autonomy Level')
+    plt.ylabel('Cooperativeness Level')
+    plt.title('Efficiency-to-Balance Ratio Heatmap')
+    
+    # Add grid lines
+    plt.grid(False)
+    
+    # Save the figure
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/efficiency_balance_ratio_heatmap.png")
+    print(f"Saved: efficiency_balance_ratio_heatmap.png")
+    plt.close()
+    
+    # Create a scaled version (0-1)
+    plt.figure(figsize=(12, 10))
+    
+    # Find min and max values for scaling
+    min_val = np.min(heatmap_data)
+    max_val = np.max(heatmap_data)
+    
+    # Create scaled data
+    if min_val == max_val:  # Handle edge case where all values are the same
+        scaled_data = np.full_like(heatmap_data, 0.5)
+    else:
+        scaled_data = (heatmap_data - min_val) / (max_val - min_val)
+    
+    # Create the scaled heatmap
+    im = plt.imshow(scaled_data, cmap='viridis', origin='lower', aspect='auto', vmin=0, vmax=1)
+    
+    # Add colorbar
+    cbar = plt.colorbar(im)
+    cbar.set_label('Scaled Efficiency-to-Balance Ratio (0-1)', rotation=270, labelpad=20)
+    
+    # Set ticks and labels
+    plt.xticks(range(len(autonomy_levels)), autonomy_levels)
+    plt.yticks(range(len(coop_levels)), coop_levels)
+    
+    # Add text annotations showing both scaled and original values
+    for i in range(len(coop_levels)):
+        for j in range(len(autonomy_levels)):
+            plt.text(j, i, f'{scaled_data[i, j]:.2f}\n({heatmap_data[i, j]:.2f})', 
+                     ha='center', va='center', color='white', fontweight='bold', fontsize=9)
+    
+    # Add labels and title
+    plt.xlabel('Autonomy Level')
+    plt.ylabel('Cooperativeness Level')
+    plt.title('Scaled Efficiency-to-Balance Ratio Heatmap (0-1)')
+    
+    # Add a note about the scaling
+    plt.figtext(
+        0.5, 0.01,
+        f"Scaling: Original values from {min_val:.2f} to {max_val:.2f} scaled to 0-1 range.\nValues shown as: Scaled (Original)",
+        ha="center", fontsize=10, bbox={"facecolor":"lightgray", "alpha":0.5, "pad":5}
+    )
+    
+    # Save the scaled figure
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/efficiency_balance_ratio_scaled_heatmap.png")
+    print(f"Saved: efficiency_balance_ratio_scaled_heatmap.png")
+    plt.close()
+
+
+
+
+
+
 def generate_visualizations(df, output_dir='./figures'):
     """
     Generate and save visualizations of the experimental results
@@ -302,6 +525,9 @@ def generate_visualizations(df, output_dir='./figures'):
     plt.savefig(f"{output_dir}/efficiency_vs_balance.png")
     print(f"Saved: efficiency_vs_balance.png")
     
+    plot_efficiency_balance_ratio(df, output_dir)
+    plot_efficiency_balance_heatmap(df, output_dir)
+
     # 4. Job types analysis
     plt.figure(figsize=(10, 6))
     job_types_df = df.groupby('Configuration')[['OnTheFlyJobs', 'MemoryJobs']].mean().reset_index()
@@ -635,7 +861,7 @@ def main():
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
     else:
-        file_path = "courier_experiment_results_02-58-38.079_pm_10-Mar-2025.csv"
+        file_path = "courier_experiment_results_10-25-43.973_am_11-Mar-2025.csv"
     
     # Check if file_path has .csv extension, if not, add it
     if not file_path.endswith('.csv'):

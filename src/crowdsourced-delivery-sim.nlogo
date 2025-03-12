@@ -156,6 +156,36 @@ globals [
   config-summary-stats    ;; Summary statistics by configuration
   autonomy-comparison     ;; Specific comparison of autonomy levels
   performance-variability ;; Measures of performance consistency
+
+  ;; Global variables for intelligent search
+  search-iteration                ;; Current iteration in the search process
+  current-parameter-set           ;; Current parameter configuration being tested
+  best-parameter-set              ;; Best parameter set found so far
+  best-score                      ;; Score of the best parameter set
+  parameter-history               ;; History of all tested parameters and their results
+  search-method                   ;; Selected search method (grid, random, bayesian, etc.)
+  adaptive-step-sizes             ;; Step sizes for each parameter, adjusted during search
+  self-org-metrics                ;; Metrics that measure self-organization
+
+  ;; Parameters for Bayesian optimization
+  exploration-weight              ;; Controls exploration vs. exploitation balance
+
+  ;; Convergence criteria
+  max-iterations                  ;; Maximum number of iterations to run
+  convergence-threshold           ;; Threshold for determining convergence
+  iterations-without-improvement  ;; Count of iterations without significant improvement
+
+  ;; Experimental design
+  num-replications               ;; Number of replications for each parameter set
+  replication-results            ;; Results from each replication
+
+  ;; Self-organization metrics
+  courier-spatial-entropy        ;; Measures distribution of couriers (lower = more organized)
+  courier-earnings-gini          ;; Measures equality of courier earnings
+  order-completion-efficiency    ;; Ratio of completed orders to courier movement
+  system-adaptability            ;; Measure of how well system responds to changes
+  emergent-clustering            ;; Degree to which couriers self-organize into optimal clusters
+  performance-robustness         ;; Consistency of performance across different conditions
 ]
 
 
@@ -250,12 +280,14 @@ to setup-couriers
     set restaurant-list insert-item 0 restaurant-list self
   ]
 
-  if autonomy-level = 0 [
+  ifelse autonomy-level = 0 [
     ;; Overwrite global variables when autonomy-level = 0 (this ensures that each restaurant has a courier)
     set random-startingpoint-couriers False
     let number-of-restaurants length restaurant-list
     set courier-population number-of-restaurants
-  ]
+  ][
+     ; set courier-population 24
+    ]
 
   let i 1
 
@@ -1181,7 +1213,7 @@ end
 
 ;; Find the restaurant with highest heat map score
 to-report find-best-heat-map-restaurant
-  let best-score 0
+  let best-rest-score 0
   let best-id 0
 
   ;; Loop through all restaurants
@@ -1202,8 +1234,8 @@ to-report find-best-heat-map-restaurant
       ]
 
       ;; Check if this is the best score
-      if (heat-score > best-score) and (heat-score > free-moving-threshold) [
-        set best-score heat-score
+      if (heat-score > best-rest-score) and (heat-score > free-moving-threshold) [
+        set best-rest-score heat-score
         set best-id i
       ]
     ]
@@ -3701,10 +3733,10 @@ to move-to-least-crowded-restaurant
       set going-to-rest target-restaurant
       set current-job nobody
 
-    ;  if debug-coop [
+      if debug-coop [
         print (word "Courier " who " strategically moving to restaurant #" least-crowded-id)
         print (word "  This restaurant has " min-couriers " couriers (lowest known)")
-     ; ]
+      ]
     ]
   ][
     ;; No valid target found, fall back to random search
@@ -4022,7 +4054,28 @@ to build-configuration-list
   if include-custom-configs? [
     ;; Example: Add a custom configuration with multiple parameters
     set experiment-configs lput (list
+      (list "autonomy-level" 0)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
       (list "autonomy-level" 1)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
       (list "cooperativeness-level" 0)
       (list "use-memory" true)
       (list "memory-fade" 5)
@@ -4031,6 +4084,38 @@ to build-configuration-list
     set experiment-configs lput (list
       (list "autonomy-level" 1)
       (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 2)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level" 2)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level"3)
       (list "use-memory" true)
       (list "memory-fade" 5)
     ) experiment-configs
@@ -5119,6 +5204,1352 @@ to-report calculate-correlation [list1 list2]
     report 0  ;; Handle case where variance is zero
   ]
 end
+
+to setup-intelligent-search
+  clear-all
+  reset-ticks
+
+  ;; Initialize search variables
+  set search-iteration 0
+  set best-score 0
+  set parameter-history []
+  set iterations-without-improvement 0
+
+  ;; Set search method from chooser
+  set search-method search-method-chooser
+
+  ;; Set number of replications
+  set num-replications 10
+
+  ;; Initialize adaptive step sizes for each parameter
+  set adaptive-step-sizes table:make
+  table:put adaptive-step-sizes "autonomy-level" 1
+  table:put adaptive-step-sizes "cooperativeness-level" 1
+  table:put adaptive-step-sizes "courier-population" 5
+  table:put adaptive-step-sizes "memory-fade" 1
+  table:put adaptive-step-sizes "job-arrival-rate" 1
+  table:put adaptive-step-sizes "neighbourhood-size" 2
+  table:put adaptive-step-sizes "restaurant-clusters" 1
+  table:put adaptive-step-sizes "restaurants-per-cluster" 2
+  table:put adaptive-step-sizes "ego-level" 0.1
+  table:put adaptive-step-sizes "prediction-weight" 0.1
+
+  ;; Set convergence criteria
+  set max-iterations 100
+  set convergence-threshold 0.01
+
+  ;; Set exploration weight for Bayesian optimization
+  set exploration-weight 0.5
+
+  ;; Initialize first parameter set based on search method
+  set current-parameter-set generate-initial-parameter-set
+  print current-parameter-set
+  ;; Initialize self-organization metrics
+  set courier-spatial-entropy 0
+  set courier-earnings-gini 0
+  set order-completion-efficiency 0
+  set system-adaptability 0
+  set emergent-clustering 0
+  set performance-robustness 0
+
+  print "Intelligent search initialized."
+  print (word "Search method: " search-method)
+  print (word "Initial parameter set: " current-parameter-set)
+  print (word "Max iterations: " max-iterations)
+end
+
+;; Generate the initial parameter set based on search method
+to-report generate-initial-parameter-set
+  let initial-params table:make
+  print search-method
+  ifelse search-method = "Grid Search" [
+    print "setting stuff to grid search"
+    ;; For grid search, start with middle values
+    table:put initial-params "autonomy-level" 2
+    table:put initial-params "cooperativeness-level" 2
+    table:put initial-params "courier-population" 15
+    table:put initial-params "memory-fade" 5
+    table:put initial-params "job-arrival-rate" 5
+    table:put initial-params "neighbourhood-size" 10
+    table:put initial-params "restaurant-clusters" 3
+    table:put initial-params "restaurants-per-cluster" 10
+    table:put initial-params "ego-level" 0.5
+    table:put initial-params "prediction-weight" 0.5
+    table:put initial-params "use-memory" true
+    table:put initial-params "fade-strategy" "Linear"
+    table:put initial-params "learning-model" "Demand Prediction"
+  ][
+    ifelse search-method = "Random Search" [
+      ;; For random search, start with random values within ranges
+      table:put initial-params "autonomy-level" random 4
+      table:put initial-params "cooperativeness-level" random 4
+      table:put initial-params "courier-population" 5 + random 26
+      table:put initial-params "memory-fade" random 11
+      table:put initial-params "job-arrival-rate" 1 + random 10
+      table:put initial-params "neighbourhood-size" 5 + random 16
+      table:put initial-params "restaurant-clusters" 1 + random 5
+      table:put initial-params "restaurants-per-cluster" 5 + random 16
+      table:put initial-params "ego-level" precision (random-float 1) 2
+      table:put initial-params "prediction-weight" precision (random-float 1) 2
+      table:put initial-params "use-memory" one-of [true false]
+      table:put initial-params "fade-strategy" one-of ["None" "Linear" "Exponential" "Recency-weighted"]
+      table:put initial-params "learning-model" one-of ["Demand Prediction" "Learning and Adaptation"]
+    ][
+      print "setting stuff to bay"
+      ;; For Bayesian or other methods, start with balanced values
+      table:put initial-params "autonomy-level" 2
+      table:put initial-params "cooperativeness-level" 2
+      table:put initial-params "courier-population" 15
+      table:put initial-params "memory-fade" 5
+      table:put initial-params "job-arrival-rate" 5
+      table:put initial-params "neighbourhood-size" 10
+      table:put initial-params "restaurant-clusters" 3
+      table:put initial-params "restaurants-per-cluster" 10
+      table:put initial-params "ego-level" 0.5
+      table:put initial-params "prediction-weight" 0.5
+      table:put initial-params "use-memory" true
+      table:put initial-params "fade-strategy" "Linear"
+      table:put initial-params "learning-model" "Demand Prediction"
+    ]
+  ]
+
+  report initial-params
+end
+
+;; Run the intelligent search process
+;; Run the intelligent search process
+to run-intelligent-search
+  print "GODVERDOMMEMEEs"
+  print max-iterations
+
+  ;; Initialize if this is the first call (regardless of tick value)
+  if search-iteration = 0 [
+    print "Initializing intelligent search - first iteration"
+
+    ;; Make sure parameter-history is a list
+    if not is-list? parameter-history [
+      set parameter-history []
+    ]
+
+    ;; Set up initial parameters for the first search iteration
+    setup-simulation-with-parameters current-parameter-set
+
+    ;; Set flag to indicate we've initialized
+    set search-iteration 1
+    set max-iterations 100
+    set num-replications 10
+    ;; Run replications to evaluate initial parameter set
+    print "Running initial parameter evaluation..."
+  ]
+
+  print "im in run intelligent serunarch"
+  print search-iteration
+  print max-iterations
+  ;; Check if we've reached termination criteria
+  if search-iteration > max-iterations [
+    print "Search completed - reached maximum iterations."
+    print (word "Best parameter set: " best-parameter-set)
+    print (word "Best score: " best-score)
+    stop
+  ]
+
+  if iterations-without-improvement >= 10 [
+    print "Search converged - no improvement in 10 iterations."
+    print (word "Best parameter set: " best-parameter-set)
+    print (word "Best score: " best-score)
+    stop
+  ]
+
+  print (word "Running search iteration " search-iteration)
+  print (word "Evaluating parameter set: " current-parameter-set)
+
+  ;; Run multiple replications
+  set replication-results []
+  print (word "Running " num-replications " replications...")
+
+  repeat num-replications [
+    print (word "Starting replication " (length replication-results + 1))
+
+    ;; Reset simulation without changing parameters
+    reset-simulation-keeping-parameters
+
+    ;; Run simulation for a fixed number of ticks
+    run-simulation-for-duration 3600  ;; 1 hour of simulation time
+
+    ;; Collect metrics from this replication
+    let replication-metrics calculate-self-organization-metrics
+
+    ;; Only add valid metrics
+    ifelse is-table? replication-metrics and table:length replication-metrics > 0 [
+      set replication-results lput replication-metrics replication-results
+      print (word "Completed replication " length replication-results)
+    ]
+    [
+      print "Warning: Invalid metrics from this replication - skipping"
+    ]
+  ]
+
+  print (word "Completed all replications")
+  print (word "Valid replication results: " length replication-results)
+
+  ;; Only proceed with analysis if we have results
+  if empty? replication-results [
+    print "Warning: No valid replication results collected. Skipping evaluation."
+
+    ;; Generate next parameter set without evaluation
+    set current-parameter-set generate-next-parameter-set
+    set search-iteration search-iteration + 1
+    stop
+  ]
+
+  ;; Calculate average metrics across replications
+  let avg-metrics calculate-average-metrics replication-results
+
+  ;; Calculate overall score for this parameter set
+  let current-score calculate-self-organization-score avg-metrics
+
+  ;; Record results if we have a valid score
+   ;; Make sure parameter-history is a list
+    if not is-list? parameter-history [
+      set parameter-history []
+    ]
+
+  if is-number? current-score [
+    let result-entry (list current-parameter-set avg-metrics current-score)
+    set parameter-history lput result-entry parameter-history
+
+    ;; Update best score if improved
+    ifelse current-score > best-score [
+      set best-parameter-set current-parameter-set
+      set best-score current-score
+      set iterations-without-improvement 0
+
+      print (word "New best parameter set found at iteration " search-iteration)
+      print (word "Score: " current-score)
+      print (word "Parameters: " current-parameter-set)
+    ][
+      set iterations-without-improvement iterations-without-improvement + 1
+    ]
+  ]
+
+  print search-method
+  print current-parameter-set
+
+  ;; Generate next parameter set based on search method
+  set current-parameter-set generate-next-parameter-set
+  print search-method
+  print current-parameter-set
+  ;; Increment iteration counter
+  set search-iteration search-iteration + 1
+
+  print (word "Completed search iteration " (search-iteration - 1))
+  print (word "Current score: " current-score)
+  print (word "Best score so far: " best-score)
+  print (word "Next parameter set: " current-parameter-set)
+end
+
+;; Set up simulation with given parameters
+to setup-simulation-with-parameters [param-set]
+  ;; Clear and initialize the simulation
+  clear-all
+
+  ;; Set global parameters from parameter set
+  set autonomy-level table:get param-set "autonomy-level"
+  set cooperativeness-level table:get param-set "cooperativeness-level"
+  set courier-population table:get param-set "courier-population"
+  set memory-fade table:get param-set "memory-fade"
+  set job-arrival-rate table:get param-set "job-arrival-rate"
+  set neighbourhood-size table:get param-set "neighbourhood-size"
+  set restaurant-clusters table:get param-set "restaurant-clusters"
+  set restaurants-per-cluster table:get param-set "restaurants-per-cluster"
+  set ego-level table:get param-set "ego-level"
+  set start-prediction-weight table:get param-set "prediction-weight"
+  set use-memory table:get param-set "use-memory"
+  set fade-strategy table:get param-set "fade-strategy"
+  set learning-model-chooser table:get param-set "learning-model"
+
+  ;; Run the standard setup procedure
+  setup
+end
+
+;; Reset simulation without changing parameters
+to reset-simulation-keeping-parameters
+  ;; Store current parameters
+  let current-autonomy autonomy-level
+  let current-coop cooperativeness-level
+  let current-couriers courier-population
+  let current-memory-fade memory-fade
+  let current-job-rate job-arrival-rate
+  let current-neighborhood neighbourhood-size
+  let current-clusters restaurant-clusters
+  let current-rests-per-cluster restaurants-per-cluster
+  let current-ego ego-level
+  let current-pred-weight start-prediction-weight
+  let current-use-memory use-memory
+  let current-fade-strategy fade-strategy
+  let current-learning-model learning-model-chooser
+
+  ;; Reset simulation state without clear-all
+  clear-turtles
+  clear-patches
+  clear-drawing
+  clear-all-plots
+  reset-ticks
+
+  ;; Restore parameters
+  set autonomy-level current-autonomy
+  set cooperativeness-level current-coop
+  set courier-population current-couriers
+  set memory-fade current-memory-fade
+  set job-arrival-rate current-job-rate
+  set neighbourhood-size current-neighborhood
+  set restaurant-clusters current-clusters
+  set restaurants-per-cluster current-rests-per-cluster
+  set ego-level current-ego
+  set start-prediction-weight current-pred-weight
+  set use-memory current-use-memory
+  set fade-strategy current-fade-strategy
+  set learning-model-chooser current-learning-model
+
+  ;; Re-initialize simulation components
+  setup-restaurant-clusters
+  setup-couriers
+
+  ;; Reset counters
+  set job-no 0
+  set on-the-fly-jobs 0
+  set memory-jobs 0
+  set waiting-couriers 0
+  set returning-couriers 0
+  set delivering-couriers 0
+  set searching-couriers 0
+end
+
+;; Run simulation for a specific duration
+to run-simulation-for-duration [duration]
+  repeat duration [
+    go
+
+    ;; Optional: add conditions to detect instability and exit early
+    if count couriers < courier-population [
+      print "Warning: Couriers lost during simulation."
+      stop
+    ]
+  ]
+end
+
+;; Calculate metrics that measure self-organization and system performance
+to-report calculate-self-organization-metrics
+  let metrics table:make
+
+  ;; 1. Spatial entropy - measure of courier distribution
+  let spatial-entropy calculate-spatial-entropy
+  table:put metrics "spatial-entropy" spatial-entropy
+
+  ;; 2. Earnings distribution (using Gini coefficient)
+  let earnings-gini calculate-earnings-gini
+  table:put metrics "earnings-gini" earnings-gini
+
+  ;; 3. Order completion efficiency
+  let completion-efficiency calculate-completion-efficiency
+  table:put metrics "completion-efficiency" completion-efficiency
+
+  ;; 4. System adaptability - ratio of on-the-fly vs. memory jobs
+  let adapt-ratio calculate-adaptability-ratio
+  table:put metrics "adaptability" adapt-ratio
+
+  ;; 5. Emergent clustering - measure of how couriers distribute near popular restaurants
+  let clustering calculate-emergent-clustering
+  table:put metrics "emergent-clustering" clustering
+
+  ;; 6. Performance metrics
+  let avg-delivery-times calculate-avg-delivery-time
+  table:put metrics "avg-delivery-times" avg-delivery-times
+
+  let courier-utilizations calculate-courier-utilization
+  table:put metrics "courier-utilization" courier-utilizations
+
+  let throughput count customers with [not any? jobs-here]
+  table:put metrics "throughput" throughput
+
+  ;; 7. Performance robustness (normalized st. dev. across performance metrics)
+  let robustness calculate-performance-robustness
+  table:put metrics "performance-robustness" robustness
+
+  report metrics
+end
+
+;; Calculate the spatial entropy of courier distribution
+to-report calculate-spatial-entropy
+  ;; Divide the world into a grid of cells
+  let cell-size 5
+  let num-cells-x world-width / cell-size
+  let num-cells-y world-height / cell-size
+  let total-cells num-cells-x * num-cells-y
+
+  ;; Count couriers in each cell
+  let courier-counts []
+  let xc 0
+
+  repeat num-cells-x [
+    let yc 0
+    repeat num-cells-y [
+      let cell-min-x (min-pxcor + xc * cell-size)
+      let cell-max-x (min-pxcor + (xc + 1) * cell-size - 1)
+      let cell-min-y (min-pycor + yc * cell-size)
+      let cell-max-y (min-pycor + (yc + 1) * cell-size - 1)
+
+      let count-in-cell count couriers with [
+        xcor >= cell-min-x and xcor <= cell-max-x and
+        ycor >= cell-min-y and ycor <= cell-max-y
+      ]
+
+      set courier-counts lput count-in-cell courier-counts
+      set yc yc + 1
+    ]
+    set xc xc + 1
+  ]
+
+  ;; Calculate Shannon entropy
+  let total-couriers count couriers
+  let entropy 0
+
+  foreach courier-counts [ count-in-cell ->
+    if count-in-cell > 0 [
+      let probability count-in-cell / total-couriers
+      set entropy entropy - (probability * ln probability)
+    ]
+  ]
+
+  ;; Normalize entropy to [0,1] range (0 = perfectly organized, 1 = perfectly uniform)
+  let max-entropy ln total-cells
+  let normalized-entropy ifelse-value max-entropy > 0 [entropy / max-entropy][0]
+
+  ;; Return 1 - normalized entropy so higher values mean more organization
+  report 1 - normalized-entropy
+end
+
+;; Calculate Gini coefficient for courier earnings
+to-report calculate-earnings-gini
+  let earnings []
+
+  ask couriers [
+    set earnings lput total-reward earnings
+  ]
+
+  set earnings sort earnings
+  let n length earnings
+
+  if n <= 1 or sum earnings = 0 [
+    report 0  ;; Equal distribution or no data
+  ]
+
+  let sum-differences 0
+  let i 0
+
+  repeat n [
+    let j 0
+    repeat n [
+      set sum-differences sum-differences + abs (item i earnings - item j earnings)
+      set j j + 1
+    ]
+    set i i + 1
+  ]
+
+  let gini sum-differences / (2 * n * n * mean earnings)
+
+  ;; Return 1 - gini so higher values mean more equal distribution
+  report 1 - gini
+end
+
+;; Calculate completion efficiency (completed jobs per unit of courier movement)
+to-report calculate-completion-efficiency
+  let total-completed-orders count customers with [not any? jobs-here]
+  let total-courier-movement 0
+
+  ask couriers [
+    ;; Proxy for movement - could be replaced with actual tracked distance
+    set total-courier-movement total-courier-movement + (length jobs-performed)
+  ]
+
+  ifelse total-courier-movement > 0 [
+    report total-completed-orders / total-courier-movement
+  ][
+    report 0
+  ]
+end
+
+;; Calculate adaptability ratio
+to-report calculate-adaptability-ratio
+  ifelse memory-jobs + on-the-fly-jobs > 0 [
+    ;; Calculate ratio that gives higher score when balanced
+    let memory-ratio memory-jobs / (memory-jobs + on-the-fly-jobs)
+
+    ;; We want to reward systems that use memory but still adapt with on-the-fly
+    ;; Optimal is around 60-70% memory jobs
+    let optimal-memory-ratio 0.65
+    let adaptability-score 1 - abs (memory-ratio - optimal-memory-ratio)
+
+    report adaptability-score
+  ][
+    report 0
+  ]
+end
+
+;; Calculate emergent clustering around high-demand locations
+to-report calculate-emergent-clustering
+  ;; First identify high-demand restaurants
+  let restaurant-demands table:make
+  let max-demand 0
+
+  ask restaurants [
+    let rest-id restaurant-id
+    let demand count jobs with [restaurant-id = rest-id and available?]
+    table:put restaurant-demands rest-id demand
+    if demand > max-demand [
+      set max-demand demand
+    ]
+  ]
+
+  if max-demand = 0 [
+    report 0  ;; No demand to cluster around
+  ]
+
+  ;; For each high-demand restaurant, check courier presence
+  let clustering-score 0
+  let restaurant-count 0
+
+  ask restaurants [
+    let rest-id restaurant-id
+    let demand table:get restaurant-demands rest-id
+    if demand > 0 [
+      ;; Calculate weighted score based on demand
+      let demand-weight demand / max-demand
+
+      ;; Count nearby couriers
+      let nearby-couriers count couriers in-radius neighbourhood-size
+
+      ;; Optimal courier count is proportional to demand weight
+      let optimal-couriers ceiling (courier-population * demand-weight * 0.5)
+
+      ;; Score how close to optimal the courier count is
+      let courier-ratio ifelse-value optimal-couriers > 0 [
+        min list 1 (nearby-couriers / optimal-couriers)
+      ][
+        0
+      ]
+
+      set clustering-score clustering-score + (courier-ratio * demand-weight)
+      set restaurant-count restaurant-count + 1
+    ]
+  ]
+
+  ;; Calculate average clustering score
+  ifelse restaurant-count > 0 [
+    report clustering-score / restaurant-count
+  ][
+    report 0
+  ]
+end
+
+;; Calculate average delivery time
+to-report calculate-avg-delivery-time
+  ifelse not empty? delivery-times [
+    report mean delivery-times
+  ][
+    report 0
+  ]
+end
+
+;; Calculate courier utilization (percentage of active couriers)
+to-report calculate-courier-utilization
+  let active-couriers count couriers with [status = "on-job"]
+  report active-couriers / courier-population
+end
+
+;; Calculate performance robustness
+to-report calculate-performance-robustness
+  ;; Here we use the coefficient of variation of delivery times as a robustness metric
+  ;; Lower CV means more consistent performance
+  ifelse not empty? delivery-times and mean delivery-times > 0 [
+    let cv standard-deviation delivery-times / mean delivery-times
+    report 1 - min list 1 cv  ;; Transform so higher values = more robust
+  ][
+    report 0
+  ]
+end
+
+;; Calculate average metrics across all replications
+to-report calculate-average-metrics [all-replication-metrics]
+  let avg-metrics table:make
+
+  ;; Check if we have any replication metrics
+  if empty? all-replication-metrics [
+    print "Warning: No replication metrics available to average."
+    report avg-metrics  ;; Return empty table
+  ]
+
+  ;; Get all metric keys from first replication
+  let metric-keys table:keys first all-replication-metrics
+
+  ;; For each metric, calculate average across replications
+  foreach metric-keys [ key ->
+    let values map [rep-metrics -> table:get rep-metrics key] all-replication-metrics
+    table:put avg-metrics key mean values
+  ]
+
+  report avg-metrics
+end
+
+;; Calculate an overall score for self-organization and performance
+to-report calculate-self-organization-score [metrics]
+    ;; Check if metrics table is empty or missing required values
+  if metrics = nobody or table:length metrics = 0 [
+    print "Warning: Empty metrics table provided to calculate-self-organization-score"
+    report 0  ;; Return zero score for invalid metrics
+  ]
+
+  ;; Check that all required metrics are present
+  let required-metrics [
+    "spatial-entropy" "earnings-gini" "completion-efficiency"
+    "adaptability" "emergent-clustering" "courier-utilization"
+    "performance-robustness"
+  ]
+
+  foreach required-metrics [ metric-name ->
+    if not table:has-key? metrics metric-name [
+      print (word "Warning: Missing required metric '" metric-name "' in calculate-self-organization-score")
+      report 0  ;; Return zero score if missing required metrics
+    ]
+  ]
+
+  ;; Define weights for each metric
+  let weights table:make
+  table:put weights "spatial-entropy" 0.15         ;; Spatial organization
+  table:put weights "earnings-gini" 0.10           ;; Fair earnings distribution
+  table:put weights "completion-efficiency" 0.20    ;; Efficiency
+  table:put weights "adaptability" 0.15            ;; Balance of memory and adaptation
+  table:put weights "emergent-clustering" 0.15     ;; Couriers cluster where needed
+  table:put weights "courier-utilization" 0.10     ;; High utilization
+  table:put weights "performance-robustness" 0.15  ;; Consistent performance
+
+  let avg-delivery-time-val table:get metrics "avg-delivery-times"
+  let delivery-time-score ifelse-value avg-delivery-time-val > 0 [
+    max list 0 (1 - avg-delivery-time-val / 30)  ;; Normalize: 0 time = 1, 30+ ticks = 0
+  ][
+    0
+  ]
+
+  let throughput table:get metrics "throughput"
+  let throughput-score min list 1 (throughput / 100)  ;; Normalize: 100+ completed orders = 1
+
+  ;; Calculate weighted score
+  let total-score 0
+
+  set total-score total-score + (table:get metrics "spatial-entropy" * table:get weights "spatial-entropy")
+  set total-score total-score + (table:get metrics "earnings-gini" * table:get weights "earnings-gini")
+  set total-score total-score + (table:get metrics "completion-efficiency" * table:get weights "completion-efficiency")
+  set total-score total-score + (table:get metrics "adaptability" * table:get weights "adaptability")
+  set total-score total-score + (table:get metrics "emergent-clustering" * table:get weights "emergent-clustering")
+  set total-score total-score + (table:get metrics "courier-utilization" * table:get weights "courier-utilization")
+  set total-score total-score + (table:get metrics "performance-robustness" * table:get weights "performance-robustness")
+
+  ;; Add additional performance metrics
+  set total-score total-score + (delivery-time-score * 0.1)
+  set total-score total-score + (throughput-score * 0.2)
+
+  ;; Normalize final score to 0-1 range
+  let max-possible-score (sum table:values weights) + 0.3  ;; Additional 0.3 for performance metrics
+  let normalized-score total-score / max-possible-score
+
+  report normalized-score
+end
+
+;; Generate the next parameter set based on search method
+to-report generate-next-parameter-set
+  print search-method
+  set search-method "Grid Search"
+  ifelse search-method = "Grid Search" [
+    print "reporting grid search..."
+    report next-grid-search-parameters
+  ][
+    ifelse search-method = "Random Search" [
+      report next-random-search-parameters
+    ][
+      ifelse search-method = "Bayesian Optimization" [
+        report next-bayesian-optimization-parameters
+      ][
+        ;; Hill Climbing
+        print "LKDSJF:JHSDKLFJHSEKLDGHSDKLJFH"
+        print search-method
+        report next-hill-climbing-parameters
+      ]
+    ]
+  ]
+end
+
+;; Grid search - systematic exploration of parameter space
+to-report next-grid-search-parameters
+  ;; In grid search, we systematically explore one parameter at a time
+  ;; First, clone the current best parameter set
+  let next-params table:make
+  if not is-table? best-parameter-set [
+    set best-parameter-set current-parameter-set
+  ]
+  ;; Copy all parameters from best set
+  foreach table:keys best-parameter-set [ key ->
+    table:put next-params key table:get best-parameter-set key
+  ]
+
+  ;; Determine which parameter to change based on search iteration
+  let param-to-change ""
+  let param-values []
+
+  let iteration-mod search-iteration mod 10
+
+  if iteration-mod = 0 [
+    set param-to-change "autonomy-level"
+    set param-values [0 1 2 3]
+  ]
+  if iteration-mod = 1 [
+    set param-to-change "cooperativeness-level"
+    set param-values [0 1 2 3]
+  ]
+  if iteration-mod = 2 [
+    set param-to-change "courier-population"
+    set param-values [5 10 15 20 25 30]
+  ]
+  if iteration-mod = 3 [
+    set param-to-change "memory-fade"
+    set param-values [0 2 5 10]
+  ]
+  if iteration-mod = 4 [
+    set param-to-change "job-arrival-rate"
+    set param-values [1 3 5 7 10]
+  ]
+  if iteration-mod = 5 [
+    set param-to-change "neighbourhood-size"
+    set param-values [5 10 15 20]
+  ]
+  if iteration-mod = 6 [
+    set param-to-change "fade-strategy"
+    set param-values ["None" "Linear" "Exponential" "Recency-weighted"]
+  ]
+  if iteration-mod = 7 [
+    set param-to-change "restaurant-clusters"
+    set param-values [1 2 3 4 5]
+  ]
+  if iteration-mod = 8 [
+    set param-to-change "ego-level"
+    set param-values [0.2 0.5 0.8]
+  ]
+  if iteration-mod = 9 [
+    set param-to-change "prediction-weight"
+    set param-values [0.1 0.3 0.5 0.7 0.9]
+  ]
+
+  ;; Get the next value in the list for this parameter
+  let current-value table:get next-params param-to-change
+  let current-index position current-value param-values
+
+  ;; If value not in list or at end of list, start from beginning
+  ifelse current-index = false or current-index >= (length param-values - 1) [
+    table:put next-params param-to-change first param-values
+  ][
+    ;; Otherwise, get next value
+    table:put next-params param-to-change item (current-index + 1) param-values
+  ]
+
+  report next-params
+end
+
+;; Random search - explore random points in parameter space
+to-report next-random-search-parameters
+  let next-params table:make
+  if not is-table? best-parameter-set [
+    set best-parameter-set table:make
+  ]
+  ;; Generate completely random parameters
+  table:put next-params "autonomy-level" random 4
+  table:put next-params "cooperativeness-level" random 4
+  table:put next-params "courier-population" 5 + random 26
+  table:put next-params "memory-fade" random 11
+  table:put next-params "job-arrival-rate" 1 + random 10
+  table:put next-params "neighbourhood-size" 5 + random 16
+  table:put next-params "restaurant-clusters" 1 + random 5
+  table:put next-params "restaurants-per-cluster" 5 + random 16
+  table:put next-params "ego-level" precision (random-float 1) 2
+  table:put next-params "prediction-weight" precision (random-float 1) 2
+  table:put next-params "use-memory" one-of [true false]
+  table:put next-params "fade-strategy" one-of ["None" "Linear" "Exponential" "Recency-weighted"]
+  table:put next-params "learning-model" one-of ["Demand Prediction" "Learning and Adaptation"]
+
+  report next-params
+end
+
+;; Hill climbing search - explore around best solution
+to-report next-hill-climbing-parameters
+  ;; Clone the current best parameter set
+  let next-params table:make
+  if not is-table? best-parameter-set [
+    set best-parameter-set table:make
+  ]
+  ;; Copy all parameters from best set
+  foreach table:keys best-parameter-set [ key ->
+    table:put next-params key table:get best-parameter-set key
+  ]
+
+  ;; Randomly choose one parameter to modify
+  let param-to-change one-of [
+    "autonomy-level" "cooperativeness-level" "courier-population"
+    "memory-fade" "job-arrival-rate" "neighbourhood-size"
+    "restaurant-clusters" "restaurants-per-cluster"
+    "ego-level" "prediction-weight"
+  ]
+
+  ;; Get current value and step size
+  let current-value table:get next-params param-to-change
+  let step-size table:get adaptive-step-sizes param-to-change
+
+  ;; Determine whether to increase or decrease
+  let direction one-of [-1 1]
+
+  ;; Calculate new value
+  let new-value 0
+
+  if param-to-change = "autonomy-level" [
+    set new-value max list 0 min list 3 (current-value + direction)
+  ]
+  if param-to-change = "cooperativeness-level" [
+    set new-value max list 0 min list 3 (current-value + direction)
+  ]
+  if param-to-change = "courier-population" [
+    set new-value max list 5 min list 30 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "memory-fade" [
+    set new-value max list 0 min list 20 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "job-arrival-rate" [
+    set new-value max list 1 min list 10 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "neighbourhood-size" [
+    set new-value max list 5 min list 20 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "restaurant-clusters" [
+    set new-value max list 1 min list 5 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "restaurants-per-cluster" [
+    set new-value max list 5 min list 20 (current-value + (direction * step-size))
+  ]
+  if param-to-change = "ego-level" [
+    set new-value max list 0 min list 1 (precision (current-value + (direction * step-size)) 2)
+  ]
+  if param-to-change = "prediction-weight" [
+    set new-value max list 0 min list 1 (precision (current-value + (direction * step-size)) 2)
+  ]
+
+  ;; Update parameter
+  table:put next-params param-to-change new-value
+
+  ;; Occasionally change discrete parameters
+  if random 10 = 0 [  ;; 10% chance
+    let discrete-param one-of ["use-memory" "fade-strategy" "learning-model"]
+
+    if discrete-param = "use-memory" [
+      table:put next-params discrete-param not table:get next-params discrete-param
+    ]
+
+    if discrete-param = "fade-strategy" [
+      let current-strategy table:get next-params discrete-param
+      let strategies ["None" "Linear" "Exponential" "Recency-weighted"]
+      let new-strategy one-of remove current-strategy strategies
+      table:put next-params discrete-param new-strategy
+    ]
+
+    if discrete-param = "learning-model" [
+      let current-model table:get next-params discrete-param
+      let models ["Demand Prediction" "Learning and Adaptation"]
+      let new-model one-of remove current-model models
+      table:put next-params discrete-param new-model
+    ]
+  ]
+
+  report next-params
+end
+
+;; Bayesian Optimization - using surrogate model
+to-report next-bayesian-optimization-parameters
+  ;; Clone the current best parameter set
+  let next-params table:make
+
+  ;; Copy all parameters from best set
+  foreach table:keys best-parameter-set [ key ->
+    table:put next-params key table:get best-parameter-set key
+  ]
+
+  ;; In a real implementation, we would use Gaussian Process regression
+  ;; to build a surrogate model of the parameter space.
+  ;; For simplicity, we'll use a heuristic approach to mimic Bayesian optimization:
+
+  ;; 1. Look at parameter history to estimate promising regions
+  let param-scores table:make
+
+  ;; Initialize scores for each parameter dimension
+  let param-dimensions [
+    "autonomy-level" "cooperativeness-level" "courier-population"
+    "memory-fade" "job-arrival-rate" "neighbourhood-size"
+    "restaurant-clusters" "restaurants-per-cluster"
+  ]
+
+  foreach param-dimensions [ param ->
+    table:put param-scores param table:make
+  ]
+
+  ;; Collect scores for each parameter value
+  foreach parameter-history [ entry ->
+    let params first entry
+    let score last entry
+
+    foreach param-dimensions [ param ->
+      let value table:get params param
+
+      ;; Create or update value in param-scores
+      ifelse table:has-key? (table:get param-scores param) value [
+        let current-scores table:get (table:get param-scores param) value
+        table:put (table:get param-scores param) value lput score current-scores
+      ][
+        table:put (table:get param-scores param) value (list score)
+      ]
+    ]
+  ]
+
+  ;; Calculate mean and uncertainty for each parameter value
+  let param-stats table:make
+
+  foreach param-dimensions [ param ->
+    table:put param-stats param table:make
+
+    foreach table:keys (table:get param-scores param) [ value ->
+      let scores table:get (table:get param-scores param) value
+      let mean-score mean scores
+
+      ;; Calculate uncertainty (std dev / sqrt(n))
+      let uncertainty ifelse-value (length scores) > 1 [
+        standard-deviation scores / sqrt length scores
+      ][
+        ;; High uncertainty if only one sample
+        0.5
+      ]
+
+      ;; Store stats
+      table:put (table:get param-stats param) value (list mean-score uncertainty)
+    ]
+  ]
+
+  ;; Select parameter to optimize based on acquisition function (upper confidence bound)
+  let selected-param ""
+  let selected-value 0
+  let best-acquisition 0
+
+  foreach param-dimensions [ param ->
+    foreach table:keys (table:get param-stats param) [ value ->
+      let stats table:get (table:get param-stats param) value
+      let mean-score first stats
+      let uncertainty last stats
+
+      ;; Calculate acquisition value (UCB)
+      let acquisition mean-score + (exploration-weight * uncertainty)
+
+      if acquisition > best-acquisition [
+        set best-acquisition acquisition
+        set selected-param param
+        set selected-value value
+      ]
+    ]
+  ]
+
+  ;; Update the selected parameter
+  if selected-param != "" [
+    table:put next-params selected-param selected-value
+  ]
+
+  ;; Occasionally explore entirely new parameter combinations
+  if random 10 < 3 [  ;; 30% exploration rate
+    ;; Randomly perturb 1-3 parameters
+    let num-to-perturb 1 + random 3
+
+    repeat num-to-perturb [
+      let param-to-change one-of param-dimensions
+
+      ;; Perturb parameter
+      if param-to-change = "autonomy-level" [
+        table:put next-params param-to-change random 4
+      ]
+      if param-to-change = "cooperativeness-level" [
+        table:put next-params param-to-change random 4
+      ]
+      if param-to-change = "courier-population" [
+        table:put next-params param-to-change (5 + random 26)
+      ]
+      if param-to-change = "memory-fade" [
+        table:put next-params param-to-change random 11
+      ]
+      if param-to-change = "job-arrival-rate" [
+        table:put next-params param-to-change (1 + random 10)
+      ]
+      if param-to-change = "neighbourhood-size" [
+        table:put next-params param-to-change (5 + random 16)
+      ]
+      if param-to-change = "restaurant-clusters" [
+        table:put next-params param-to-change (1 + random 5)
+      ]
+      if param-to-change = "restaurants-per-cluster" [
+        table:put next-params param-to-change (5 + random 16)
+      ]
+    ]
+
+    ;; Also randomly change discrete parameters
+    if random 2 = 0 [  ;; 50% chance
+      table:put next-params "use-memory" one-of [true false]
+    ]
+    if random 2 = 0 [
+      table:put next-params "fade-strategy" one-of ["None" "Linear" "Exponential" "Recency-weighted"]
+    ]
+    if random 2 = 0 [
+      table:put next-params "learning-model" one-of ["Demand Prediction" "Learning and Adaptation"]
+    ]
+    if random 2 = 0 [
+      table:put next-params "ego-level" precision (random-float 1) 2
+    ]
+    if random 2 = 0 [
+      table:put next-params "prediction-weight" precision (random-float 1) 2
+    ]
+  ]
+
+  report next-params
+end
+
+;; Update adaptive step sizes based on recent performance
+to update-adaptive-step-sizes
+   ;; Ensure parameter-history is a list
+  if not is-list? parameter-history [
+    print "Warning: parameter-history is not a list in update-adaptive-step-sizes. Skipping update."
+    stop
+  ]
+
+  ;; Only update if we have at least 3 data points
+  if length parameter-history < 3 [
+    stop
+  ]
+
+  ;; Examine most recent 3 iterations
+  let recent-history sublist parameter-history (length parameter-history - 3) (length parameter-history)
+  let recent-scores map [entry -> last entry] recent-history
+
+  ;; Check if scores are improving
+  let improving? increasing? recent-scores
+
+  ;; Adapt step sizes accordingly
+  ifelse improving? [
+    ;; If improving, increase step sizes for faster progress
+    foreach table:keys adaptive-step-sizes [ param ->
+      let current-step table:get adaptive-step-sizes param
+      table:put adaptive-step-sizes param (current-step * 1.2)
+    ]
+  ]
+  [
+    ;; If not improving, decrease step sizes for finer search
+    foreach table:keys adaptive-step-sizes [ param ->
+      let current-step table:get adaptive-step-sizes param
+      table:put adaptive-step-sizes param (current-step * 0.8)
+    ]
+  ]
+
+  ;; Ensure step sizes stay within reasonable bounds
+  foreach table:keys adaptive-step-sizes [ param ->
+    let min-step 0.1
+    let max-step 5
+
+    if param = "autonomy-level" or param = "cooperativeness-level" [
+      set min-step 1
+      set max-step 1
+    ]
+
+    if param = "courier-population" [
+      set min-step 1
+      set max-step 5
+    ]
+
+    if param = "memory-fade" [
+      set min-step 0.5
+      set max-step 2
+    ]
+
+    if param = "ego-level" or param = "prediction-weight" [
+      set min-step 0.05
+      set max-step 0.2
+    ]
+
+    ;; Apply bounds
+    let current-step table:get adaptive-step-sizes param
+    table:put adaptive-step-sizes param (max list min-step min list max-step current-step)
+  ]
+end
+
+;; Check if a list is increasing (for adaptive step size updates)
+to-report increasing? [value-list]
+  let i 0
+
+  while [i < length value-list - 1] [
+    if item i value-list >= item (i + 1) value-list [
+      report false
+    ]
+    set i i + 1
+  ]
+
+  report true
+end
+
+;; Generate a report of the best parameter configurations
+to generate-self-organization-report
+     ;; Ensure parameter-history is a list
+  if not is-list? parameter-history [
+    print "Warning: parameter-history is not a list in generate-self-organization-report. Skipping update."
+    stop
+  ]
+  print "\n==== SELF-ORGANIZATION PARAMETER SEARCH REPORT ===="
+  print (word "Total configurations tested: " length parameter-history)
+  print (word "Best score achieved: " precision best-score 4)
+  print "\nBest parameter configuration:"
+
+  foreach sort table:keys best-parameter-set [ param ->
+    print (word "  " param ": " table:get best-parameter-set param)
+  ]
+
+  ;; Calculate metrics for best configuration
+  print "\nSelf-organization metrics for best configuration:"
+  let top-entries filter [entry -> last entry > (best-score * 0.9)] parameter-history
+  let top-metrics map [entry -> item 1 entry] top-entries
+
+  let metric-keys table:keys first top-metrics
+
+  foreach metric-keys [ key ->
+    let values map [metrics -> table:get metrics key] top-metrics
+    let avg-value mean values
+
+    print (word "  " key ": " precision avg-value 4)
+  ]
+
+  ;; Identify parameter importance
+  print "\nParameter importance analysis:"
+
+  let param-dimensions [
+    "autonomy-level" "cooperativeness-level" "courier-population"
+    "memory-fade" "job-arrival-rate" "neighbourhood-size"
+    "restaurant-clusters" "restaurants-per-cluster"
+    "ego-level" "prediction-weight"
+  ]
+
+  foreach param-dimensions [ param ->
+    ;; Create a table mapping parameter values to scores
+    let value-scores table:make
+
+    ;; Group scores by parameter value
+    foreach parameter-history [ entry ->
+      let params first entry
+      let score last entry
+      let value table:get params param
+
+      ;; Add score to appropriate value group
+      ifelse table:has-key? value-scores value [
+        let current-scores table:get value-scores value
+        table:put value-scores value lput score current-scores
+      ][
+        table:put value-scores value (list score)
+      ]
+    ]
+
+    ;; Calculate mean score for each value
+    let value-means table:make
+
+    foreach table:keys value-scores [ value ->
+      let scores table:get value-scores value
+      table:put value-means value mean scores
+    ]
+
+    ;; Calculate variance of means (higher variance = more important parameter)
+    let all-means table:values value-means
+
+    ifelse length all-means >= 2 [
+      let importance standard-deviation all-means
+      print (word "  " param ": " precision importance 4 " importance score")
+
+      ;; Show best values
+      let sorted-values sort-by [ [a b] ->
+        table:get value-means a > table:get value-means b
+      ] table:keys value-means
+
+      let top-values sublist sorted-values 0 (min list 3 length sorted-values)
+      print (word "    Best values: " top-values)
+    ][
+      print (word "  " param ": insufficient data")
+    ]
+  ]
+
+  print "\n==== END OF REPORT ===="
+end
+
+;; Visualize search progress
+to plot-search-progress
+   ;; Ensure parameter-history is a list
+  if not is-list? parameter-history [
+    print "Warning: parameter-history is not a list in plot-search-progress. Skipping update."
+    stop
+  ]
+  set-current-plot "Search Progress"
+  clear-plot
+
+  ;; Extract scores and iterations
+  let iterations range length parameter-history
+  let scores map [entry -> last entry] parameter-history
+
+  ;; Plot scores
+  foreach (range length scores) [ i ->
+    set-current-plot-pen "Score"
+    plotxy i item i scores
+  ]
+
+  ;; Plot best score
+  foreach (range length scores) [ i ->
+    set-current-plot-pen "Best Score"
+    plotxy i best-score-at-iteration i
+  ]
+end
+
+;; Helper to get best score at a given iteration
+to-report best-score-at-iteration [iter]
+  let scores-so-far map [entry -> last entry] sublist parameter-history 0 (iter + 1)
+  report max scores-so-far
+end
+
+;; Generate heat maps for parameter relationships
+to generate-parameter-heatmaps
+   ;; Ensure parameter-history is a list
+  if not is-list? parameter-history [
+    print "Warning: parameter-history is not a list in generate-parameter-heatmaps. Skipping update."
+    stop
+  ]
+  ;; Example: generate heatmap for autonomy-level vs. cooperativeness-level
+  print "\n==== PARAMETER RELATIONSHIP HEATMAP ===="
+  print "Autonomy Level vs. Cooperativeness Level:"
+
+  ;; Create a 4x4 grid for autonomy (0-3) vs. cooperativeness (0-3)
+  let heatmap []
+  repeat 4 [
+    let row []
+    repeat 4 [
+      set row lput "---" row
+    ]
+    set heatmap lput row heatmap
+  ]
+
+  ;; Fill in scores where we have data
+  foreach parameter-history [ entry ->
+    let params first entry
+    let score last entry
+
+    let autonomy table:get params "autonomy-level"
+    let coop table:get params "cooperativeness-level"
+
+    ;; Only process if within our grid
+    if autonomy >= 0 and autonomy < 4 and coop >= 0 and coop < 4 [
+      ;; Current value in grid
+      let current-value item coop item autonomy heatmap
+
+      ;; Update with score if cell is empty or score is better
+      if current-value = "---" or score > read-from-string current-value [
+        let score-str (word precision score 2)
+        let row-list item autonomy heatmap
+        set row-list replace-item coop row-list score-str
+        set heatmap replace-item autonomy heatmap row-list
+      ]
+    ]
+  ]
+
+  ;; Print the heatmap
+  print "           Cooperativeness Level"
+  print "           0     1     2     3"
+  print "         +-----+-----+-----+-----+"
+
+  let a 0
+  repeat 4 [
+    let row-str (word "Autonomy " a " |")
+
+    let c 0
+    repeat 4 [
+      let val item c item a heatmap
+      set row-str (word row-str " " val " |")
+      set c c + 1
+    ]
+
+    print row-str
+    print "         +-----+-----+-----+-----+"
+    set a a + 1
+  ]
+
+  print "\n==== END OF HEATMAP ===="
+end
+
+;; Main experiment runner
+to run-self-organization-experiment
+  set max-iterations 10  ;; Set this to your desired number of iterations
+  ;; Set up the search
+  setup-intelligent-search
+  print (word "Initial search-iteration: " search-iteration)
+  print (word "Initial iterations-without-improvement: " iterations-without-improvement)
+    ;; Explicitly ensure parameter-history is a list
+  if parameter-history = 0 or not is-list? parameter-history [
+    set parameter-history []
+    print "Parameter history initialized as empty list"
+  ]
+
+  set max-iterations 10  ;; Set this to your desired number of iterations
+  print max-iterations
+  ;; Run search for specified number of iterations
+  let search-complete? false
+  print search-complete?
+  while [not search-complete?] [
+    run-intelligent-search
+
+    ;; Update adaptive step sizes
+    update-adaptive-step-sizes
+
+    ;; Plot progress
+    plot-search-progress
+
+    ;; Check if search is complete
+    set search-complete?
+      search-iteration >= max-iterations or
+      iterations-without-improvement >= 10
+
+    print (word "After iteration: search-iteration = " search-iteration ", iterations-without-improvement = " iterations-without-improvement)
+    print (word "search-complete? = " search-complete?)
+  ]
+
+  ;; Generate final report
+  generate-self-organization-report
+
+  ;; Generate heatmaps
+  generate-parameter-heatmaps
+
+  ;; Run final simulation with best parameters
+  print "\nRunning final simulation with best parameters..."
+  setup-simulation-with-parameters best-parameter-set
+  repeat 7200 [go]  ;; Run for 2 hours of simulation time
+
+  print "\nFinal simulation completed."
+  print "Observe the courier behavior to see self-organization in action."
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 210
@@ -5190,7 +6621,7 @@ courier-population
 courier-population
 1
 100
-6.0
+15.0
 1
 1
 NIL
@@ -5205,7 +6636,7 @@ job-arrival-rate
 job-arrival-rate
 0
 100
-3.0
+5.0
 1
 1
 NIL
@@ -5254,7 +6685,7 @@ restaurant-clusters
 restaurant-clusters
 1
 10
-2.0
+3.0
 1
 1
 NIL
@@ -5269,7 +6700,7 @@ restaurants-per-cluster
 restaurants-per-cluster
 1
 20
-3.0
+10.0
 1
 1
 NIL
@@ -5284,7 +6715,7 @@ cluster-area-size
 cluster-area-size
 1
 20
-8.0
+10.0
 1
 1
 NIL
@@ -5402,7 +6833,7 @@ autonomy-level
 autonomy-level
 0
 3
-3.0
+2.0
 1
 1
 NIL
@@ -5417,7 +6848,7 @@ cooperativeness-level
 cooperativeness-level
 0
 3
-3.0
+2.0
 1
 1
 NIL
@@ -5567,7 +6998,7 @@ start-prediction-weight
 start-prediction-weight
 0
 1
-1.0
+0.5
 0.05
 1
 NIL
@@ -5712,7 +7143,7 @@ SWITCH
 216
 vary-autonomy?
 vary-autonomy?
-0
+1
 1
 -1000
 
@@ -5723,7 +7154,7 @@ SWITCH
 251
 vary-cooperativeness?
 vary-cooperativeness?
-0
+1
 1
 -1000
 
@@ -5756,7 +7187,7 @@ SWITCH
 355
 include-custom-configs?
 include-custom-configs?
-1
+0
 1
 -1000
 
@@ -5969,7 +7400,7 @@ ego-level
 ego-level
 0
 1
-0.0
+0.5
 0.05
 1
 NIL
@@ -5985,6 +7416,52 @@ debug-sharing
 1
 1
 -1000
+
+CHOOSER
+1347
+243
+1511
+288
+search-method-chooser
+search-method-chooser
+"Grid Search" "Random Search" "Hill Climbing" "Bayesian Optimization"
+0
+
+BUTTON
+1392
+303
+1490
+336
+Run Sim Opt
+run-self-organization-experiment
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+PLOT
+1315
+400
+1515
+550
+Search Progress
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"Score" 1.0 0 -16777216 true "" ""
+"Best Score" 1.0 0 -7500403 true "" ""
 
 @#$#@#$#@
 ## WHAT IS IT?
