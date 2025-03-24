@@ -4334,8 +4334,68 @@ to build-configuration-list
   if include-custom-configs? [
     ;; Example: Add a custom configuration with multiple parameters
     set experiment-configs lput (list
+      (list "autonomy-level" 0)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 1)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
       (list "autonomy-level" 3)
-      (list "cooperativeness-level" 3)
+      (list "cooperativeness-level" 0)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 1)
+      (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+
+    set experiment-configs lput (list
+      (list "autonomy-level" 2)
+      (list "cooperativeness-level" 2)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level" 1)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level" 2)
+      (list "use-memory" true)
+      (list "memory-fade" 5)
+    ) experiment-configs
+    set experiment-configs lput (list
+      (list "autonomy-level" 3)
+      (list "cooperativeness-level"3)
       (list "use-memory" true)
       (list "memory-fade" 5)
     ) experiment-configs
@@ -6913,10 +6973,10 @@ to add-open-orders-to-results-data
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
-401
-15
-929
-544
+357
+10
+885
+539
 -1
 -1
 8.0
@@ -6933,8 +6993,8 @@ GRAPHICS-WINDOW
 32
 -32
 32
-1
-1
+0
+0
 1
 ticks
 30.0
@@ -6974,25 +7034,25 @@ NIL
 1
 
 SLIDER
-158
-84
-310
-117
+785
+20
+957
+53
 courier-population
 courier-population
 1
 100
-20.0
+30.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-12
-83
-147
-116
+15
+509
+187
+542
 job-arrival-rate
 job-arrival-rate
 0
@@ -7004,10 +7064,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-19
-310
-168
-343
+783
+70
+955
+103
 neighbourhood-size
 neighbourhood-size
 0
@@ -7038,10 +7098,10 @@ PENS
 "Jobs from memory" 1.0 0 -7500403 true "" "plotxy ticks memory-jobs"
 
 SLIDER
-13
-125
-147
-158
+780
+309
+952
+342
 restaurant-clusters
 restaurant-clusters
 1
@@ -7053,10 +7113,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-158
-128
-311
-161
+777
+410
+956
+443
 restaurants-per-cluster
 restaurants-per-cluster
 1
@@ -7068,10 +7128,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-14
-165
-147
-198
+780
+357
+952
+390
 cluster-area-size
 cluster-area-size
 1
@@ -7083,10 +7143,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-24
-660
-150
-693
+11
+210
+183
+243
 level-of-order
 level-of-order
 0
@@ -7098,10 +7158,10 @@ NIL
 HORIZONTAL
 
 SWITCH
-24
-698
-150
-731
+11
+168
+140
+201
 use-memory
 use-memory
 0
@@ -7109,10 +7169,10 @@ use-memory
 -1000
 
 SLIDER
-23
-738
-150
-771
+11
+251
+183
+284
 memory-fade
 memory-fade
 0
@@ -7164,10 +7224,10 @@ PENS
 "Random search" 1.0 0 -10899396 true "" "plot searching-couriers"
 
 SWITCH
-157
-168
-350
-201
+785
+256
+994
+289
 random-startingpoint-couriers
 random-startingpoint-couriers
 1
@@ -7175,10 +7235,10 @@ random-startingpoint-couriers
 -1000
 
 MONITOR
-419
-552
-527
-597
+781
+511
+889
+556
 random vs. memory
 on-the-fly-jobs / memory-jobs
 1
@@ -7186,10 +7246,10 @@ on-the-fly-jobs / memory-jobs
 11
 
 SLIDER
-18
-237
-145
-270
+12
+76
+184
+109
 autonomy-level
 autonomy-level
 0
@@ -7201,10 +7261,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-175
-237
-312
-270
+11
+121
+183
+154
 cooperativeness-level
 cooperativeness-level
 0
@@ -7227,20 +7287,20 @@ show-cluster-lines
 -1000
 
 CHOOSER
-23
-777
-151
-822
+11
+291
+162
+336
 fade-strategy
 fade-strategy
 "None" "Linear" "Exponential" "Recency-weighted"
 1
 
 SLIDER
-175
-309
-323
+11
 342
+183
+375
 free-moving-threshold
 free-moving-threshold
 0
@@ -7252,20 +7312,20 @@ NIL
 HORIZONTAL
 
 CHOOSER
-21
-524
-174
-569
+12
+401
+189
+446
 learning-model-chooser
 learning-model-chooser
 "Demand Prediction" "Learning and Adaptation"
 0
 
 SLIDER
-24
-850
-151
-883
+14
+459
+186
+492
 learning-rate
 learning-rate
 0.1
@@ -7277,10 +7337,10 @@ NIL
 HORIZONTAL
 
 SWITCH
-971
-140
-1089
-173
+781
+169
+915
+202
 debug-memory
 debug-memory
 1
@@ -7288,32 +7348,32 @@ debug-memory
 -1000
 
 SWITCH
-970
+782
 217
-1090
+971
 250
 debug-demand-prediction
 debug-demand-prediction
-1
-1
--1000
-
-SWITCH
-708
-908
-867
-941
-first-go-back-to-rest
-first-go-back-to-rest
-1
+0
 1
 -1000
 
 SWITCH
 20
-446
-178
-479
+556
+179
+589
+first-go-back-to-rest
+first-go-back-to-rest
+1
+1
+-1000
+
+SWITCH
+216
+562
+374
+595
 opportunistic-switch
 opportunistic-switch
 1
@@ -7321,10 +7381,10 @@ opportunistic-switch
 -1000
 
 SLIDER
-20
-484
-160
-517
+392
+624
+564
+657
 switch-threshold
 switch-threshold
 10
@@ -7336,10 +7396,10 @@ switch-threshold
 HORIZONTAL
 
 SLIDER
-972
-60
-1086
-93
+785
+122
+957
+155
 debug-interval
 debug-interval
 0
@@ -7347,14 +7407,14 @@ debug-interval
 60.0
 60
 1
-ticks
+NIL
 HORIZONTAL
 
 SLIDER
-22
-574
-174
-607
+680
+589
+852
+622
 start-prediction-weight
 start-prediction-weight
 0
@@ -7366,10 +7426,10 @@ NIL
 HORIZONTAL
 
 MONITOR
-540
-558
-720
-603
+902
+517
+1082
+562
 Prediction Weights
 all-prediction-weights
 2
@@ -7377,10 +7437,10 @@ all-prediction-weights
 11
 
 MONITOR
-737
-550
-818
-595
+916
+460
+997
+505
 Time of Day
 get-current-time-block
 2
@@ -7388,10 +7448,10 @@ get-current-time-block
 11
 
 MONITOR
-826
-551
-951
-596
+780
+456
+905
+501
 Prediction Accuracy
 prediction-accuracy
 2
@@ -7399,10 +7459,10 @@ prediction-accuracy
 11
 
 PLOT
-965
-433
-1165
-583
+29
+700
+229
+850
 Courier Rewards
 Time (ticks)
 Earnings
@@ -7435,10 +7495,10 @@ PENS
 "default" 1.0 0 -16777216 true "" "ifelse ticks >= 3600 [plot mean [total-reward / (ticks / 3600)] of couriers][plot 0]"
 
 PLOT
-1172
-433
-1372
-583
+399
+687
+599
+837
 Prediction Accuracy
 Ticks (time)
 Accuracy (%)
@@ -7453,25 +7513,25 @@ PENS
 "default" 1.0 0 -16777216 true "" "if prediction-accuracy > 0 [plot prediction-accuracy]"
 
 SLIDER
-472
-621
-660
-654
+1135
+41
+1323
+74
 experiment-runs-per-config
 experiment-runs-per-config
 1
 50
-1.0
+2.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-472
-656
-710
-689
+1135
+76
+1373
+109
 experiment-ticks-per-run
 experiment-ticks-per-run
 3600
@@ -7483,10 +7543,10 @@ seconds
 HORIZONTAL
 
 SLIDER
-472
-692
-644
-725
+1135
+112
+1307
+145
 experiment-base-seed
 experiment-base-seed
 1
@@ -7498,10 +7558,10 @@ NIL
 HORIZONTAL
 
 SWITCH
-749
-626
-890
-659
+1135
+183
+1276
+216
 vary-autonomy?
 vary-autonomy?
 1
@@ -7509,10 +7569,10 @@ vary-autonomy?
 -1000
 
 SWITCH
-749
-661
-920
-694
+1135
+218
+1306
+251
 vary-cooperativeness?
 vary-cooperativeness?
 1
@@ -7520,10 +7580,10 @@ vary-cooperativeness?
 -1000
 
 SWITCH
-749
-696
-880
-729
+1135
+253
+1266
+286
 vary-memory?
 vary-memory?
 1
@@ -7531,10 +7591,10 @@ vary-memory?
 -1000
 
 SWITCH
-749
-730
-928
-763
+1135
+287
+1314
+320
 vary-prediction-weight?
 vary-prediction-weight?
 1
@@ -7542,10 +7602,10 @@ vary-prediction-weight?
 -1000
 
 SWITCH
-749
-765
-928
-798
+1135
+322
+1314
+355
 include-custom-configs?
 include-custom-configs?
 0
@@ -7553,10 +7613,10 @@ include-custom-configs?
 -1000
 
 BUTTON
-475
-738
-602
-771
+1135
+382
+1262
+415
 Setup Experiments
 setup-experiments
 NIL
@@ -7570,10 +7630,10 @@ NIL
 1
 
 BUTTON
-475
-774
-593
-807
+1135
+418
+1253
+451
 Run Experiments
 run-experiment
 NIL
@@ -7587,10 +7647,10 @@ NIL
 1
 
 BUTTON
-475
-810
-596
-843
+1135
+454
+1256
+487
 Stop Experiments
 stop-experiment
 NIL
@@ -7604,10 +7664,10 @@ NIL
 1
 
 INPUTBOX
-1114
-686
-1367
-746
+1146
+513
+1399
+573
 analysis-file-path
 C:\\Users\\deazb\\Documents\\GitHub\\self-organizing-crowdsourced-food-delivery-system\\experiments\\courier_experiment_results_02-58-38.079_pm_10-Mar-2025.csv
 1
@@ -7615,10 +7675,10 @@ C:\\Users\\deazb\\Documents\\GitHub\\self-organizing-crowdsourced-food-delivery-
 String
 
 BUTTON
-987
-699
-1097
-732
+1171
+602
+1281
+635
 Analyze Results
 analyze-experiment-results analysis-file-path
 NIL
@@ -7632,10 +7692,10 @@ NIL
 1
 
 PLOT
-963
-280
-1163
-430
+1004
+642
+1204
+792
 Autonomy Level Comparison
 Autonomy Level
 Value
@@ -7652,10 +7712,10 @@ PENS
 "Utilization" 1.0 0 -2674135 true "" ""
 
 PLOT
-1170
-283
-1370
-433
+1211
+645
+1411
+795
 Performance Variability
 Autonomy Level
 Variability
@@ -7672,20 +7732,20 @@ PENS
 "Deliveries Var" 1.0 0 -2674135 true "" ""
 
 CHOOSER
-209
-448
-346
-493
+60
+649
+309
+694
 job-sharing-algorithm
 job-sharing-algorithm
 "Balanced Load" "Proportional Fairness"
 0
 
 SWITCH
-972
-102
-1088
-135
+965
+175
+1081
+208
 debug-coop
 debug-coop
 1
@@ -7693,25 +7753,25 @@ debug-coop
 -1000
 
 SLIDER
-206
-607
-441
-640
+711
+668
+914
+701
 strategic-repositioning-interval
 strategic-repositioning-interval
 60
 600
-60.0
+360.0
 60
 1
-ticks
+NIL
 HORIZONTAL
 
 SLIDER
-207
-661
-379
-694
+739
+728
+911
+761
 max-courier-threshold
 max-courier-threshold
 0
@@ -7723,40 +7783,40 @@ NIL
 HORIZONTAL
 
 SLIDER
-210
-699
-394
-732
+737
+763
+921
+796
 courier-proximity-threshold
 courier-proximity-threshold
 0
 10
-5.0
+2.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-207
-523
-390
-556
+635
+821
+807
+854
 share-heat-map-interval
 share-heat-map-interval
 60
 600
-60.0
+180.0
 60
 1
-ticks
+NIL
 HORIZONTAL
 
 SLIDER
-207
-562
-390
-595
+860
+834
+1032
+867
 ego-level
 ego-level
 0
@@ -7768,31 +7828,31 @@ NIL
 HORIZONTAL
 
 SWITCH
-971
-179
-1089
+977
 212
+1106
+245
 debug-sharing
 debug-sharing
-1
+0
 1
 -1000
 
 CHOOSER
-1126
-59
-1290
-104
+1347
+243
+1511
+288
 search-method-chooser
 search-method-chooser
 "Grid Search" "Random Search" "Hill Climbing" "Bayesian Optimization"
 0
 
 BUTTON
-1123
-18
-1221
-51
+1392
+303
+1490
+336
 Run Sim Opt
 run-self-organization-experiment
 NIL
@@ -7806,10 +7866,10 @@ NIL
 1
 
 PLOT
-1120
-112
-1320
-262
+1315
+400
+1515
+550
 Search Progress
 NIL
 NIL
@@ -7831,106 +7891,6 @@ TEXTBOX
 32
 Simulation Controls
 10
-0.0
-1
-
-TEXTBOX
-107
-215
-257
-233
-Self-Organization Controls\n
-10
-0.0
-1
-
-TEXTBOX
-25
-641
-175
-815
-Memory Settings
-10
-0.0
-1
-
-TEXTBOX
-973
-35
-1123
-53
-Debug Toggles\n
-10
-0.0
-1
-
-TEXTBOX
-219
-371
-369
-389
-Coop Settings\n
-12
-0.0
-1
-
-TEXTBOX
-210
-501
-360
-519
-Coop Lvl. 3 Only
-10
-0.0
-1
-
-TEXTBOX
-25
-832
-175
-850
-Temporal Memory Settings
-10
-0.0
-1
-
-TEXTBOX
-23
-424
-173
-442
-Autonomy Lvl. 3
-10
-0.0
-1
-
-TEXTBOX
-209
-427
-359
-445
-Coop Lvl. 1 and higher
-10
-0.0
-1
-
-TEXTBOX
-20
-287
-170
-305
-General Courier Settings
-10
-0.0
-1
-
-TEXTBOX
-22
-374
-172
-392
-Autonomy Settings
-12
 0.0
 1
 

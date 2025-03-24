@@ -452,126 +452,82 @@ def plot_efficiency_balance_ratio(df, output_dir='./figures'):
 
 def plot_efficiency_balance_heatmap(df, output_dir='./figures'):
     """
-    Create a heatmap showing the efficiency-to-balance ratio across all combinations
-    of autonomy levels (x-axis) and cooperativeness levels (y-axis).
-    Y-axis is displayed from 0 (bottom) to 3 (top).
+    Create a heatmap showing the efficiency-to-balance ratio and related metrics 
+    across autonomy and cooperativeness levels. Shows only non-zero values, with 
+    larger font and rounded integers.
     """
-    print("\n=== GENERATING EFFICIENCY-BALANCE RATIO HEATMAP ===")
+    print("\n=== GENERATING UPDATED EFFICIENCY-BALANCE RATIO HEATMAP ===")
     
-    # Create output directory if it doesn't exist
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Check if required columns exist
-    required_cols = ['AutonomyLevel', 'CooperativenessLevel', 'EfficiencyToBalanceRatio']
+
+    required_cols = ['AutonomyLevel', 'CooperativenessLevel', 'EfficiencyToBalanceRatio',
+                     'TotalDeliveries', 'DeliveriesPerCourierSD']
     if not all(col in df.columns for col in required_cols):
-        print("Missing required columns for efficiency-balance ratio heatmap")
+        print("Missing required columns for enhanced heatmap")
         return
     
-    # Filter out rows with missing values
-    plot_df = df[required_cols].dropna()
+    # Precompute values
+    df['EfficiencyToBalanceRatio'] = df['TotalDeliveries'] / (df['DeliveriesPerCourierSD'] + 0.1)
+    grouped = df.groupby(['AutonomyLevel', 'CooperativenessLevel']).agg({
+        'EfficiencyToBalanceRatio': 'mean',
+        'TotalDeliveries': 'mean',
+        'DeliveriesPerCourierSD': 'mean'
+    }).reset_index()
     
-    if len(plot_df) == 0:
-        print("No valid data for efficiency-balance ratio heatmap")
-        return
-    
-    # Calculate average ratio for each (autonomy, coop) combination
-    summary_df = plot_df.groupby(['AutonomyLevel', 'CooperativenessLevel'])['EfficiencyToBalanceRatio'].mean().reset_index()
-    
-    # Extract unique levels and sort them
-    autonomy_levels = sorted(plot_df['AutonomyLevel'].unique())
-    coop_levels = sorted(plot_df['CooperativenessLevel'].unique())
-    
-    # Create a 2D numpy array for the heatmap values
-    heatmap_data = np.zeros((len(coop_levels), len(autonomy_levels)))
-    
-    # Fill the array with values from the grouped data
-    for i, coop in enumerate(coop_levels):
-        for j, auto in enumerate(autonomy_levels):
-            # Filter to get the value for this combination
-            mask = (summary_df['AutonomyLevel'] == auto) & (summary_df['CooperativenessLevel'] == coop)
-            if any(mask):
-                heatmap_data[i, j] = summary_df.loc[mask, 'EfficiencyToBalanceRatio'].values[0]
-    
-    # Create the heatmap using imshow with origin='lower' to put (0,0) at bottom-left
-    plt.figure(figsize=(12, 10))
-    im = plt.imshow(heatmap_data, cmap='viridis', origin='lower', aspect='auto')
-    
-    # Add colorbar
-    cbar = plt.colorbar(im)
-    cbar.set_label('Efficiency-to-Balance Ratio', rotation=270, labelpad=20)
-    
-    # Set ticks and labels
-    plt.xticks(range(len(autonomy_levels)), autonomy_levels)
-    plt.yticks(range(len(coop_levels)), coop_levels)
-    
-    # Add text annotations for the values
-    for i in range(len(coop_levels)):
-        for j in range(len(autonomy_levels)):
-            plt.text(j, i, f'{heatmap_data[i, j]:.2f}', 
-                     ha='center', va='center', color='white', fontweight='bold')
-    
-    # Add labels and title
-    plt.xlabel('Autonomy Level')
-    plt.ylabel('Cooperativeness Level')
-    plt.title('Efficiency-to-Balance Ratio Heatmap')
-    
-    # Add grid lines
-    plt.grid(False)
-    
-    # Save the figure
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/efficiency_balance_ratio_heatmap.png")
-    print(f"Saved: efficiency_balance_ratio_heatmap.png")
-    plt.close()
-    
-    # Create a scaled version (0-1)
-    plt.figure(figsize=(12, 10))
-    
-    # Find min and max values for scaling
-    min_val = np.min(heatmap_data)
-    max_val = np.max(heatmap_data)
-    
-    # Create scaled data
-    if min_val == max_val:  # Handle edge case where all values are the same
-        scaled_data = np.full_like(heatmap_data, 0.5)
-    else:
-        scaled_data = (heatmap_data - min_val) / (max_val - min_val)
-    
-    # Create the scaled heatmap
-    im = plt.imshow(scaled_data, cmap='viridis', origin='lower', aspect='auto', vmin=0, vmax=1)
-    
-    # Add colorbar
-    cbar = plt.colorbar(im)
-    cbar.set_label('Scaled Efficiency-to-Balance Ratio (0-1)', rotation=270, labelpad=20)
-    
-    # Set ticks and labels
-    plt.xticks(range(len(autonomy_levels)), autonomy_levels)
-    plt.yticks(range(len(coop_levels)), coop_levels)
-    
-    # Add text annotations showing both scaled and original values
-    for i in range(len(coop_levels)):
-        for j in range(len(autonomy_levels)):
-            plt.text(j, i, f'{scaled_data[i, j]:.2f}\n({heatmap_data[i, j]:.2f})', 
-                     ha='center', va='center', color='white', fontweight='bold', fontsize=9)
-    
-    # Add labels and title
-    plt.xlabel('Autonomy Level')
-    plt.ylabel('Cooperativeness Level')
-    plt.title('Scaled Efficiency-to-Balance Ratio Heatmap (0-1)')
-    
-    # Add a note about the scaling
-    plt.figtext(
-        0.5, 0.01,
-        f"Scaling: Original values from {min_val:.2f} to {max_val:.2f} scaled to 0-1 range.\nValues shown as: Scaled (Original)",
-        ha="center", fontsize=10, bbox={"facecolor":"lightgray", "alpha":0.5, "pad":5}
+    # Scale the efficiency-to-balance ratio between 0–1
+    min_val = grouped['EfficiencyToBalanceRatio'].min()
+    max_val = grouped['EfficiencyToBalanceRatio'].max()
+    grouped['ScaledEfficiency'] = (
+        (grouped['EfficiencyToBalanceRatio'] - min_val) /
+        (max_val - min_val) if max_val > min_val else 0.5
     )
     
-    # Save the scaled figure
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/efficiency_balance_ratio_scaled_heatmap.png")
-    print(f"Saved: efficiency_balance_ratio_scaled_heatmap.png")
-    plt.close()
+    autonomy_levels = sorted(df['AutonomyLevel'].dropna().unique())
+    coop_levels = sorted(df['CooperativenessLevel'].dropna().unique())
 
+    heatmap_data = np.full((len(coop_levels), len(autonomy_levels)), np.nan)
+    annotations = [['' for _ in autonomy_levels] for _ in coop_levels]
+
+    for _, row in grouped.iterrows():
+        i = coop_levels.index(row['CooperativenessLevel'])
+        j = autonomy_levels.index(row['AutonomyLevel'])
+        
+        value = row['EfficiencyToBalanceRatio']
+        if value > 0:
+            heatmap_data[i, j] = value
+            annotations[i][j] = (
+                f"{int(round(row['TotalDeliveries']))}\n"
+                f"{int(round(row['DeliveriesPerCourierSD']))}\n"
+                f"{int(round(row['EfficiencyToBalanceRatio']))}\n"
+                f"({row['ScaledEfficiency']:.2f})"
+            )
+
+    plt.figure(figsize=(12, 10))
+    ax = sns.heatmap(
+        heatmap_data,
+        annot=annotations,
+        fmt='',
+        cmap='viridis',
+        cbar_kws={'label': 'Efficiency-to-Balance Ratio'},
+        linewidths=0.5,
+        linecolor='gray',
+        xticklabels=autonomy_levels,
+        yticklabels=coop_levels,
+        square=True,
+        annot_kws={"fontsize": 13, "weight": "bold"}
+    )
+
+    ax.set_xlabel('Autonomy Level', fontsize=14)
+    ax.set_ylabel('Cooperativeness Level', fontsize=14)
+    ax.set_title('Efficiency-to-Balance Ratio Heatmap\n'
+                 'Values: Total Deliveries | SD per Courier | Ratio | (Scaled Ratio)', fontsize=16)
+
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/enhanced_efficiency_balance_heatmap.png")
+    print(f"Saved: enhanced_efficiency_balance_heatmap.png")
+    plt.close()
 def plot_open_orders_visualizations(df, output_dir='./figures'):
     """
     Generate visualizations specifically for open orders metrics

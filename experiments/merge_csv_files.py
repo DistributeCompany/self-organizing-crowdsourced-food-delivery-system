@@ -3,6 +3,86 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import stats
 import math
+import os
+import glob
+from datetime import datetime
+
+def merge_csv_files(input_files=None, output_file=None, add_source_column=True):
+    """
+    Merge multiple CSV files into a single CSV file.
+    
+    Parameters:
+    -----------
+    input_files : list or None
+        List of input CSV file paths. If None, all CSV files in the current directory will be used.
+    output_file : str or None
+        Path for the output merged CSV file. If None, a default name with timestamp will be used.
+    add_source_column : bool
+        Whether to add a column indicating the source file for each row. Default is True.
+    
+    Returns:
+    --------
+    str
+        Path to the created merged CSV file
+    """
+    # If no input files are specified, find all CSV files in the current directory
+    if input_files is None:
+        input_files = glob.glob("courier_experiment_results_*.csv")
+    
+    # Exclude the output file from input files if it exists
+    if output_file and output_file in input_files:
+        input_files.remove(output_file)
+    
+    # Check if there are any input files
+    if not input_files:
+        print("No CSV files found for merging")
+        return None
+    
+    # Create default output filename if not provided
+    if output_file is None:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_file = f"merged_experiments_{timestamp}.csv"
+    
+    print(f"Merging {len(input_files)} CSV files:")
+    for file in input_files:
+        print(f"  - {file}")
+    
+    # Read and merge all CSV files
+    all_data = []
+    for file in input_files:
+        try:
+            # Read the CSV file
+            df = pd.read_csv(file)
+            
+            # Add source file column if requested
+            if add_source_column:
+                df['SourceFile'] = os.path.basename(file)
+            
+            # Add to the list of dataframes
+            all_data.append(df)
+            print(f"  Successfully read {len(df)} rows from {file}")
+        except Exception as e:
+            print(f"  Error reading {file}: {str(e)}")
+    
+    # Merge all dataframes
+    if not all_data:
+        print("No data could be read from the input files")
+        return None
+    
+    merged_df = pd.concat(all_data, ignore_index=True)
+    print(f"Merged data has {len(merged_df)} total rows and {len(merged_df.columns)} columns")
+    
+    # Save the merged data
+    merged_df.to_csv(output_file, index=False)
+    print(f"Merged CSV saved to {output_file}")
+    
+    # Print summary of rows contributed by each source file
+    if add_source_column:
+        print("\nRows contributed by each file:")
+        for file, count in merged_df['SourceFile'].value_counts().items():
+            print(f"  {file}: {count} rows")
+    
+    return output_file, merged_df
 
 def calculate_replications(data, variable, relative_precision=0.1, confidence=0.95):
     """
@@ -113,7 +193,7 @@ def calculate_replications(data, variable, relative_precision=0.1, confidence=0.
     
     return results
 
-def plot_required_replications(results):
+def plot_required_replications(results, filename="required_replications.png"):
     """
     Create a bar plot of the required replications for each configuration.
     
@@ -121,6 +201,8 @@ def plot_required_replications(results):
     -----------
     results : dict
         The dictionary of results from calculate_replications
+    filename : str
+        The filename to save the plot to
     
     Returns:
     --------
@@ -161,9 +243,11 @@ def plot_required_replications(results):
             ax.text(i + width/2, max(current_n) * 1.1, "∞", ha='center')
     
     fig.tight_layout()
+    fig.savefig(filename)
+    print(f"Plot saved as '{filename}'")
     return fig
 
-def plot_confidence_intervals(results, variable):
+def plot_confidence_intervals(results, variable, filename="confidence_intervals.png"):
     """
     Create a plot of the confidence intervals for each configuration.
     
@@ -173,6 +257,8 @@ def plot_confidence_intervals(results, variable):
         The dictionary of results from calculate_replications
     variable : str
         The name of the variable being analyzed
+    filename : str
+        The filename to save the plot to
     
     Returns:
     --------
@@ -199,6 +285,7 @@ def plot_confidence_intervals(results, variable):
     
     # Skip plotting if no valid configurations
     if not configs:
+        print(f"No valid confidence intervals to plot for {variable}")
         return None
     
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -234,6 +321,8 @@ def plot_confidence_intervals(results, variable):
     ax.legend()
     
     fig.tight_layout()
+    fig.savefig(filename)
+    print(f"Plot saved as '{filename}'")
     return fig
 
 def generate_report(results, variable):
@@ -289,27 +378,24 @@ def generate_report(results, variable):
 
 def main():
     """
-    Main function to run the replication analysis.
+    Main function to run the replication analysis on merged experiment data.
     """
-    # Load the data
-    try:
-        df = pd.read_csv('merged_experiments_20250320_105338.csv')
-        print(f"Successfully loaded CSV with {len(df)} rows and {len(df.columns)} columns")
-        print(f"Column names: {', '.join(df.columns.tolist())}")
-    except FileNotFoundError:
-        print("Error: CSV file 'all_experiments.csv' not found. Please check the file path.")
-        return
-    except Exception as e:
-        print(f"Error loading CSV: {str(e)}")
+    # Step 1: Merge all CSV files
+    print("Step 1: Merging CSV files")
+    output_file, merged_df = merge_csv_files()
+    
+    if merged_df is None:
+        print("Error: Could not merge CSV files. Exiting.")
         return
     
-    # Define the variable to analyze (using one from the provided CSV columns)
+    # Step 2: Calculate replications for a specific variable
     variable = 'AvgEarnings'
+    print(f"\nStep 2: Analyzing replications for {variable}")
     
     # Make sure the variable exists in the dataframe
-    if variable not in df.columns:
-        print(f"Error: Variable '{variable}' not found in the CSV columns.")
-        print(f"Available columns: {', '.join(df.columns.tolist())}")
+    if variable not in merged_df.columns:
+        print(f"Error: Variable '{variable}' not found in the merged data.")
+        print(f"Available columns: {', '.join(merged_df.columns.tolist())}")
         return
     
     # Set the relative precision to 10%
@@ -320,30 +406,30 @@ def main():
     
     # Calculate required replications
     try:
-        results = calculate_replications(df, variable, relative_precision)
+        results = calculate_replications(merged_df, variable, relative_precision)
         
         if not results:
             print(f"No valid configurations found for analysis.")
             return
-            
-        # Generate and display report
+        
+        # Step 3: Generate and save report
+        print("\nStep 3: Generating report")
         report = generate_report(results, variable)
+        
+        report_file = f"replication_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(report_file, 'w') as f:
+            f.write(report)
+        print(f"Report saved to {report_file}")
+        
+        print("\nReport summary:")
         print(report)
         
-        # Create plots
-        fig1 = plot_required_replications(results)
-        fig2 = plot_confidence_intervals(results, variable)
+        # Step 4: Create and save plots
+        print("\nStep 4: Creating visualizations")
+        plot_required_replications(results)
+        plot_confidence_intervals(results, variable)
         
-        # Save plots
-        if fig1:
-            fig1.savefig('required_replications.png')
-            print("Plot saved as 'required_replications.png'")
-        
-        if fig2:
-            fig2.savefig('confidence_intervals.png')
-            print("Plot saved as 'confidence_intervals.png'")
-        
-        print("Analysis complete.")
+        print("\nAnalysis complete.")
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")
