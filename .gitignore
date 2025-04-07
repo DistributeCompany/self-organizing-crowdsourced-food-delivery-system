@@ -1,6 +1,7 @@
 # Custom
 12.pdf
 /backups 
+/experiments
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,3 +1,0 @@
-Configuration,DetailedConfiguration,Run,TotalDeliveries,AvgDeliveryTime,DeliveryTimeSD,AvgEarnings,EarningsSD,AvgDeliveriesPerCourier,DeliveriesPerCourierSD,CourierUtilization,WaitingPercentage,SearchingPercentage,EarningsPerHour,OnTheFlyJobs,MemoryJobs,JobTypeRatio,AvgJobsPerCourier,JobsPerCourierSD
-"autonomy-level=2_cooperativeness-level=1_use-memory=true_memory-fade=5","autonomy-level=2_cooperativeness-level=1_use-memory=true_memory-fade=5_couriers=6_neighbourhood=10_jobRate=3_fadeStrategy=Linear_clusters=2_restsPerCluster=3_restsClusterSize=8",run_1,2705,"81.1323","66.828","13824.9197","469.3596","450.8333","9.3897","0.2123","3.9666","59.7907","3456.2299",0,"263","0","450.8333","9.3897"
-
